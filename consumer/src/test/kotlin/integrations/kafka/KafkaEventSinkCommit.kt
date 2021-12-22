@@ -1,6 +1,8 @@
 package integrations.kafka
 
+import integrations.kafka.KafkaTestUtils.createConsumer
 import kotlinx.coroutines.runBlocking
+import extension.newDatabase
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.TopicPartition
@@ -19,7 +21,7 @@ class KafkaEventSinkCommit : KafkaEventSinkBase() {
         val topic = UUID.randomUUID().toString()
         graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.$topic", cypherQueryTemplate)
         graphDatabaseBuilder.setConfig("kafka.${ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG}", "false")
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
         val partition = 0
         var producerRecord = ProducerRecord(topic, partition, UUID.randomUUID().toString(), JSONUtils.writeValueAsBytes(data))
         kafkaProducer.send(producerRecord).get()
@@ -32,11 +34,42 @@ class KafkaEventSinkCommit : KafkaEventSinkBase() {
             val query = "MATCH (n:Label) RETURN count(*) AS count"
             val result = db.execute(query).columnAs<Long>("count")
 
-            val kafkaConsumer = createConsumer<String, ByteArray>()
+            val kafkaConsumer = createConsumer<String, ByteArray>(
+                    kafka = KafkaEventSinkSuiteIT.kafka,
+                    schemaRegistry = KafkaEventSinkSuiteIT.schemaRegistry)
             val offsetAndMetadata = kafkaConsumer.committed(TopicPartition(topic, partition))
             kafkaConsumer.close()
 
             result.hasNext() && result.next() == 2L && !result.hasNext() && resp.offset() + 1 == offsetAndMetadata.offset()
+        }, Matchers.equalTo(true), 30, TimeUnit.SECONDS)
+    }
+
+    @Test
+    fun shouldWriteLastOffsetWithAsyncCommit() = runBlocking {
+        val topic = UUID.randomUUID().toString()
+        graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.$topic", cypherQueryTemplate)
+        graphDatabaseBuilder.setConfig("kafka.${ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG}", "false")
+        graphDatabaseBuilder.setConfig("kafka.streams.commit.async", "true")
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
+        val partition = 0
+        var producerRecord = ProducerRecord(topic, partition, UUID.randomUUID().toString(), JSONUtils.writeValueAsBytes(data))
+        kafkaProducer.send(producerRecord).get()
+        val newData = data.toMutableMap()
+        newData["id"] = 2
+        producerRecord = ProducerRecord(topic, partition, UUID.randomUUID().toString(), JSONUtils.writeValueAsBytes(newData))
+        val resp = kafkaProducer.send(producerRecord).get()
+
+        Assert.assertEventually(ThrowingSupplier<Boolean, Exception> {
+            val query = "MATCH (n:Label) RETURN count(*) AS count"
+            val result = db.execute(query).columnAs<Long>("count")
+
+            val kafkaConsumer = createConsumer<String, ByteArray>(
+                    kafka = KafkaEventSinkSuiteIT.kafka,
+                    schemaRegistry = KafkaEventSinkSuiteIT.schemaRegistry)
+            val offsetAndMetadata = kafkaConsumer.committed(TopicPartition(topic, partition))
+            kafkaConsumer.close()
+
+            result.hasNext() && result.next() == 2L && !result.hasNext() && resp.offset() + 1 == offsetAndMetadata?.offset()
         }, Matchers.equalTo(true), 30, TimeUnit.SECONDS)
 
     }
@@ -54,7 +87,7 @@ class KafkaEventSinkCommit : KafkaEventSinkBase() {
         graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.${customer.first}", customer.second)
         graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.${bought.first}", bought.second)
         graphDatabaseBuilder.setConfig("kafka.${ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG}", "false")
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
 
         val props = mapOf("id" to 1, "name" to "My Awesome Product")
         var producerRecord = ProducerRecord(product.first, UUID.randomUUID().toString(),

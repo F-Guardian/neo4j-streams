@@ -8,7 +8,7 @@ import org.neo4j.kernel.configuration.Config
 import streams.StreamsSinkConfiguration
 import streams.extensions.toPointCase
 import streams.serialization.JSONUtils
-import streams.utils.ValidationUtils
+import streams.utils.KafkaValidationUtils.getInvalidTopics
 import streams.utils.ValidationUtils.validateConnection
 import java.util.*
 
@@ -38,6 +38,7 @@ data class KafkaSinkConfiguration(val zookeeperConnect: String = "localhost:2181
                                   val autoOffsetReset: String = "earliest",
                                   val streamsSinkConfiguration: StreamsSinkConfiguration = StreamsSinkConfiguration(),
                                   val enableAutoCommit: Boolean = true,
+                                  val streamsAsyncCommit: Boolean = false,
                                   val extraProperties: Map<String, String> = emptyMap()) {
 
     companion object {
@@ -49,7 +50,12 @@ data class KafkaSinkConfiguration(val zookeeperConnect: String = "localhost:2181
         fun from(cfg: Map<String, String>): KafkaSinkConfiguration {
             val kafkaCfg = create(cfg)
             validate(kafkaCfg)
-            return kafkaCfg
+            val invalidTopics = getInvalidTopics(kafkaCfg.asProperties(), kafkaCfg.streamsSinkConfiguration.topics.allTopics())
+            return if (invalidTopics.isNotEmpty()) {
+                kafkaCfg.copy(streamsSinkConfiguration = StreamsSinkConfiguration.from(cfg, invalidTopics))
+            } else {
+                kafkaCfg
+            }
         }
 
         // Visible for testing
@@ -59,12 +65,10 @@ data class KafkaSinkConfiguration(val zookeeperConnect: String = "localhost:2181
                     .mapKeys { it.key.substring(kafkaConfigPrefix.length) }
             val default = KafkaSinkConfiguration()
 
-
             val keys = JSONUtils.asMap(default).keys.map { it.toPointCase() }
             val extraProperties = config.filterKeys { !keys.contains(it) }
 
             val streamsSinkConfiguration = StreamsSinkConfiguration.from(cfg)
-
             return default.copy(zookeeperConnect = config.getOrDefault("zookeeper.connect",default.zookeeperConnect),
                     keyDeserializer = config.getOrDefault(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, default.keyDeserializer),
                     valueDeserializer = config.getOrDefault(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, default.valueDeserializer),
@@ -72,6 +76,7 @@ data class KafkaSinkConfiguration(val zookeeperConnect: String = "localhost:2181
                     autoOffsetReset = config.getOrDefault(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, default.autoOffsetReset),
                     groupId = config.getOrDefault(ConsumerConfig.GROUP_ID_CONFIG, default.groupId),
                     enableAutoCommit = config.getOrDefault(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, default.enableAutoCommit).toString().toBoolean(),
+                    streamsAsyncCommit = config.getOrDefault("streams.async.commit", default.streamsAsyncCommit).toString().toBoolean(),
                     streamsSinkConfiguration = streamsSinkConfiguration,
                     extraProperties = extraProperties // for what we don't provide a default configuration
             )

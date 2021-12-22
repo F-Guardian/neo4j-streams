@@ -1,10 +1,12 @@
 package integrations.kafka
 
 import io.confluent.kafka.serializers.KafkaAvroDeserializer
+import extension.newDatabase
 import org.junit.Test
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.test.TestGraphDatabaseFactory
 import org.testcontainers.containers.GenericContainer
+import streams.events.StreamsPluginStatus
 import kotlin.test.assertEquals
 
 
@@ -23,19 +25,20 @@ class KafkaEventSinkNoConfigurationIT {
     private val topic = "no-config"
 
     @Test
-    fun `the db should start even with no bootstrap servers provided()`() {
+    fun `the db should start even with no bootstrap servers provided`() {
         val db = TestGraphDatabaseFactory()
                 .newImpermanentDatabaseBuilder()
                 .setConfig("kafka.bootstrap.servers", "")
                 .setConfig("streams.sink.enabled", "true")
                 .setConfig("streams.sink.topic.cypher.$topic", "CREATE (p:Place{name: event.name, coordinates: event.coordinates, citizens: event.citizens})")
-                .newGraphDatabase() as GraphDatabaseAPI
+                .newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         val count = db.execute("MATCH (n) RETURN COUNT(n) AS count").columnAs<Long>("count").next()
         assertEquals(0L, count)
+        db.shutdown()
     }
 
     @Test
-    fun `the db should start even with AVRO serializers and no schema registry url provided()`() {
+    fun `the db should start even with AVRO serializers and no schema registry url provided`() {
         val fakeWebServer = FakeWebServer()
         fakeWebServer.start()
         val url = fakeWebServer.getUrl().replace("http://", "")
@@ -47,9 +50,10 @@ class KafkaEventSinkNoConfigurationIT {
                 .setConfig("streams.sink.topic.cypher.$topic", "CREATE (p:Place{name: event.name, coordinates: event.coordinates, citizens: event.citizens})")
                 .setConfig("kafka.key.deserializer", KafkaAvroDeserializer::class.java.name)
                 .setConfig("kafka.value.deserializer", KafkaAvroDeserializer::class.java.name)
-                .newGraphDatabase() as GraphDatabaseAPI
+                .newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         val count = db.execute("MATCH (n) RETURN COUNT(n) AS count").columnAs<Long>("count").next()
         assertEquals(0L, count)
         fakeWebServer.stop()
+        db.shutdown()
     }
 }

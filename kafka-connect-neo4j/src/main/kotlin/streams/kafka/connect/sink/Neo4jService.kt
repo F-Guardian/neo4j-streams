@@ -14,6 +14,8 @@ import org.neo4j.driver.v1.exceptions.TransientException
 import org.neo4j.driver.v1.net.ServerAddress
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
+import streams.extensions.awaitAll
+import streams.extensions.errors
 import streams.kafka.connect.sink.converters.Neo4jValueConverter
 import streams.service.StreamsSinkEntity
 import streams.service.StreamsSinkService
@@ -76,18 +78,19 @@ class Neo4jService(private val config: Neo4jSinkConnectorConfig):
         driver.close()
     }
 
-    override fun getTopicType(topic: String): TopicType? = TopicType.values()
-            .filter { topicType ->
-                when (topicType.group) {
-                    TopicTypeGroup.CUD -> config.topics.cudTopics.contains(topic)
-                    TopicTypeGroup.CDC -> (config.topics.cdcSourceIdTopics.contains(topic))
-                            || (config.topics.cdcSchemaTopics.contains(topic))
-                    TopicTypeGroup.CYPHER -> config.topics.cypherTopics.containsKey(topic)
-                    TopicTypeGroup.PATTERN -> (topicType == TopicType.PATTERN_NODE && config.topics.nodePatternTopics.containsKey(topic))
-                            || (topicType == TopicType.PATTERN_RELATIONSHIP && config.topics.relPatternTopics.containsKey(topic))
+    override fun getTopicType(topic: String): TopicType? {
+        val topicConfigMap = config.topics.asMap()
+        return TopicType.values()
+                .filter { topicType ->
+                    val topicConfig = topicConfigMap.getOrDefault(topicType, emptyList<Any>())
+                    when (topicConfig) {
+                        is Collection<*> -> topicConfig.contains(topic)
+                        is Map<*, *> -> topicConfig.containsKey(topic)
+                        else -> false
+                    }
                 }
-            }
-            .firstOrNull()
+                .firstOrNull()
+    }
 
     override fun getCypherTemplate(topic: String): String? = "${StreamsUtils.UNWIND} ${config.topics.cypherTopics[topic]}"
 
@@ -116,39 +119,6 @@ class Neo4jService(private val config: Neo4jSinkConnectorConfig):
             session.close()
         }
     }
-
-    // taken from https://stackoverflow.com/questions/52192752/kotlin-how-to-run-n-coroutines-and-wait-for-first-m-results-or-timeout
-    @ObsoleteCoroutinesApi
-    @ExperimentalCoroutinesApi
-    suspend fun <T> List<Deferred<T>>.awaitAll(timeoutMs: Long): List<T> {
-        val jobs = CopyOnWriteArraySet<Deferred<T>>(this)
-        val result = ArrayList<T>(size)
-        val timeout = ticker(timeoutMs)
-
-        whileSelect {
-            jobs.forEach { deferred ->
-                deferred.onAwait {
-                    jobs.remove(deferred)
-                    result.add(it)
-                    result.size != size
-                }
-            }
-
-            timeout.onReceive {
-                jobs.forEach { it.cancel() }
-                throw TimeoutException("Tasks ${size} cancelled after timeout of $timeoutMs ms.")
-            }
-        }
-
-        return result
-    }
-
-    @ExperimentalCoroutinesApi
-    fun <T> Deferred<T>.errors() = when {
-        isCompleted -> getCompletionExceptionOrNull()
-        isCancelled -> getCompletionExceptionOrNull() // was getCancellationException()
-        isActive -> RuntimeException("Job $this still active")
-        else -> null }
 
     suspend fun writeData(data: Map<String, List<List<StreamsSinkEntity>>>) {
         val errors = if (config.parallelBatches) writeDataAsync(data) else writeDataSync(data);

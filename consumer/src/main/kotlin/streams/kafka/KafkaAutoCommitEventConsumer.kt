@@ -15,6 +15,9 @@ import streams.extensions.topicPartition
 import streams.service.StreamsSinkEntity
 import streams.service.errors.*
 import java.time.Duration
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class KafkaTopicConfig(val commit: Boolean, val topicPartitionsMap: Map<TopicPartition, Long>) {
     companion object {
@@ -40,9 +43,13 @@ data class KafkaTopicConfig(val commit: Boolean, val topicPartitionsMap: Map<Top
 
 open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfiguration,
                                         private val log: Log,
-                                        private val errorService: ErrorService): StreamsEventConsumer(log, errorService) {
+                                        val topics: Set<String>): StreamsEventConsumer(log, topics) {
 
-    private var isSeekSet = false
+    private val errorService = KafkaErrorService(config.asProperties(), ErrorService.ErrorConfig.from(config.streamsSinkConfiguration.errorConfig), { s, e -> log.error(s,e as Throwable)})
+
+    override fun invalidTopics(): List<String> = config.streamsSinkConfiguration.topics.invalid
+
+    private var isSeekSet = AtomicBoolean()
 
     val consumer: KafkaConsumer<*, *> = when {
         config.keyDeserializer == ByteArrayDeserializer::class.java.name && config.valueDeserializer == ByteArrayDeserializer::class.java.name -> KafkaConsumer<ByteArray, ByteArray>(config.asProperties())
@@ -50,13 +57,6 @@ open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfigurati
         config.keyDeserializer == KafkaAvroDeserializer::class.java.name && config.valueDeserializer == KafkaAvroDeserializer::class.java.name -> KafkaConsumer<GenericRecord, GenericRecord>(config.asProperties())
         config.keyDeserializer == KafkaAvroDeserializer::class.java.name && config.valueDeserializer == ByteArrayDeserializer::class.java.name -> KafkaConsumer<GenericRecord, ByteArray>(config.asProperties())
         else -> throw RuntimeException("Invalid config")
-    }
-
-    lateinit var topics: Set<String>
-
-    override fun withTopics(topics: Set<String>): StreamsEventConsumer {
-        this.topics = topics
-        return this
     }
 
     override fun start() {
@@ -69,48 +69,25 @@ open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfigurati
 
     override fun stop() {
         consumer.close()
-        // doesn't make sense to close it if you don't own it
         errorService.close()
     }
 
-    fun readSimple(action: (String, List<StreamsSinkEntity>) -> Unit): Map<TopicPartition, OffsetAndMetadata> {
+    private fun readSimple(action: (String, List<StreamsSinkEntity>) -> Unit) {
         val records = consumer.poll(Duration.ZERO)
-        return when (records.isEmpty) {
-            true -> emptyMap()
-            else -> this.topics
-                    .filter { topic -> records.records(topic).iterator().hasNext() }
-                    .flatMap { topic -> records.records(topic).map { it.topicPartition() to it } }
-                    .groupBy({ it.first }, { it.second })
-                    .mapValues {
-                        executeAction(action, it.key.topic(), it.value)
-                        it.value.last().offsetAndMetadata()
-                    }
+        if (records.isEmpty) return
+        this.topics.forEach { topic ->
+            val topicRecords = records.records(topic)
+            executeAction(action, topic, topicRecords)
         }
     }
 
-    private fun executeAction(action: (String, List<StreamsSinkEntity>) -> Unit, topic: String, topicRecords: Iterable<ConsumerRecord<out Any, out Any>>) {
+    fun executeAction(action: (String, List<StreamsSinkEntity>) -> Unit, topic: String, topicRecords: Iterable<ConsumerRecord<out Any, out Any>>) {
         try {
-            action(topic, convert(topicRecords))
+            action(topic, topicRecords.map { it.toStreamsSinkEntity() })
         } catch (e: Exception) {
-            errorService.report(topicRecords.map { ErrorData.from(it, e,this::class.java ) })
+            errorService.report(topicRecords.map { ErrorData.from(it, e, this::class.java) })
         }
     }
-
-    private fun convert(topicRecords: Iterable<ConsumerRecord<out Any, out Any>>) = topicRecords
-            .map {
-                try {
-                    "ok" to it.toStreamsSinkEntity()
-                } catch (e: Exception) {
-                    "error" to ErrorData.from(it, e, this::class.java)
-                }
-            }
-            .groupBy({ it.first }, { it.second })
-            .let {
-                it.get("error")?.let {
-                    errorService.report(it as List<ErrorData>)
-                }
-                it.getOrDefault("ok", emptyList()) as List<StreamsSinkEntity>
-            }
 
     fun readFromPartition(kafkaTopicConfig: KafkaTopicConfig,
                           action: (String, List<StreamsSinkEntity>) -> Unit): Map<TopicPartition, OffsetAndMetadata> {
@@ -142,10 +119,9 @@ open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfigurati
     }
 
     private fun setSeek(topicPartitionsMap: Map<TopicPartition, Long>) {
-        if (isSeekSet) {
+        if (!isSeekSet.compareAndSet(false, true)) {
             return
         }
-        isSeekSet = true
         consumer.poll(0) // dummy call see: https://stackoverflow.com/questions/41008610/kafkaconsumer-0-10-java-api-error-message-no-current-assignment-for-partition
         topicPartitionsMap.forEach {
             when (it.value) {

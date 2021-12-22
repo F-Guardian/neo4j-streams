@@ -1,14 +1,16 @@
-[[procedures]]
-== Cypher Procedures
+
+[#neo4j_streams_procedures]
+== Neo4j Streams - Procedures
+:environment: streams
 
 ifdef::env-docs[]
 [abstract]
 --
-This chapter describes consumer and producer procedures in the Neo4j Streams Library.  Procedures
-allow the functionality of the plugin to be used ad-hoc in any Cypher query.
+This chapter describes the Neo4j Streams Procedures in the Neo4j Streams Library.
+Use this section to configure Neo4j to know how procedures allow the functionality of the plugin
+to be used ad-hoc in any Cypher query.
 --
 endif::env-docs[]
-
 
 The Streams project comes out with a list of procedures.
 
@@ -17,9 +19,28 @@ The Streams project comes out with a list of procedures.
 You can enable/disable the procedures by changing this variable inside the `neo4j.conf`
 
 .neo4j.conf
+[subs="verbatim,attributes"]
 ----
-streams.procedures.enabled=<true/false, default=true>
+{environment}.procedures.enabled=<true/false, default=true>
 ----
+
+[NOTE]
+====
+Please note that by default the `dbms.security.procedures.whitelist` property is disabled, so Neo4j will load all
+procedures found.
+If you enable it then you have also to declare a comma separated list of procedures to be loaded by default. For example:
+
+[source, properties]
+----
+dbms.security.procedures.whitelist=streams.*,apoc.*
+----
+
+If you try to CALL one of the Streams procedures without declaring them into the whitelist, you will receive an error like
+the following:
+
+image::../../images/procedure_not_found.png[title="Neo4j Streams procedure not found", align="center"]
+
+====
 
 === streams.publish
 
@@ -33,7 +54,7 @@ The message retrieved from the Consumer is the following:
 
 `{"payload":"Hello world from Neo4j!"}`
 
-If you use a local <<docker,docker (compose) setup>>, you can check for these messages with:
+If you use a local <<neo4j_streams_docker,docker (compose) setup>>, you can check for these messages with:
 
 `docker exec -it kafka kafka-console-consumer --topic my-topic --bootstrap-server kafka:9092`
 
@@ -55,9 +76,58 @@ Input Parameters:
 
 |===
 
+Configuration parameters:
+[cols="3*",options="header"]
+|===
+|Name
+|Type
+|Description
+
+|`key`
+|Object
+|The key value of message that you want to stream. Please note that if the key doesn't exist, you get a message with a random UUID as key value
+
+|`partition`
+|Int
+|The partition of message that you want to stream
+
+|===
+
 You can send any kind of data in the payload, nodes, relationships, paths, lists, maps, scalar values and nested versions thereof.
 
 In case of nodes or relationships if the topic is defined in the patterns provided by the configuration their properties will be filtered in according with the configuration.
+
+
+=== streams.publish.sync
+
+Similar to `streams.publish` procedure, but in a synchronous way.
+
+Uses:
+
+`CALL streams.publish.sync('my-topic', 'my-payload', {<config>}) YIELD value RETURN value`
+
+This procedure return a `RecordMetadata` value like this `{"timestamp": 1, "offset": 2, "partition", 3, "keySize", 4, "valueSize", 5}`
+
+[cols="2*",options="header"]
+|===
+|Variable Name
+|Description
+
+|`timestamp`
+|The timestamp of the record in the topic/partition.
+
+|`offset`
+|The offset of the record in the topic/partition.
+
+|`partition`
+|The partition the record was sent to
+
+|`keySize`
+|The size of the serialized, uncompressed key in bytes
+
+|`valueSize`
+|The size of the serialized, uncompressed value in bytes
+|===
 
 === streams.consume
 
@@ -165,7 +235,7 @@ Supported deserializers are: `org.apache.kafka.common.serialization.ByteArrayDes
 
 |===
 
-===== Partitions
+==== Partitions
 
 [cols="3*",options="header"]
 |===
@@ -183,3 +253,64 @@ Supported deserializers are: `org.apache.kafka.common.serialization.ByteArrayDes
 
 |===
 
+=== Streams Sink Lifecycle procedure
+
+We provide a set of procedures in order to manage the Sink lifecycle.
+
+[cols="2*",options="header"]
+|===
+|Proc. Name
+|Description
+
+|`CALL streams.sink.stop() YIELD name, value`
+| stops the Sink, and return the status, with the error if one occurred during the process
+
+|`CALL streams.sink.start() YIELD name, value`
+| starts the Sink, and return the status, with the error if one occurred during the process
+
+|`CALL streams.sink.restart() YIELD name, value`
+| restart the Sink, and return the status, with the error if one occurred during the process
+
+|`CALL streams.sink.config() YIELD name, value`
+| returns the Sink config, please check the table "Streams Config"
+
+|`CALL streams.sink.status() YIELD name, value`
+| returns the status
+|===
+
+[NOTE]
+Please consider that in order to use this procedures you must enable the streams procedures and they are runnable only on the leader.
+
+.Streams Config
+[cols="2*",options="header"]
+|===
+|Config Name
+|Description
+
+|invalid_topics
+|return a list of invalid topics
+
+|streams.sink.topic.pattern.relationship
+|return a Map<K,V> where the K is the topic name and V is the provided pattern
+
+|streams.sink.topic.cud
+|return a list of topics defined for the CUD format
+
+|streams.sink.topic.cdc.sourceId
+|return a list of topics defined for the CDC SourceId strategy
+
+|streams.sink.topic.cypher
+|return a Map<K,V> where the K is the topic name and V is the provided Cypher Query
+
+|streams.sink.topic.cdc.schema
+|return a list of topics defined for the CDC Schema strategy
+
+|streams.sink.topic.pattern.node
+|return a Map<K,V> where the K is the topic name and V is the provided pattern
+
+|streams.sink.errors
+|return a Map<K,V> where the K sub property name, and V is the value
+
+|streams.sink.source.id.strategy.config
+|returns the config for the SourceId CDC strategy
+|===

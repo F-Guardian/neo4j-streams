@@ -46,6 +46,8 @@ data class RelationshipPayload(override val id: String,
 
 enum class StreamsConstraintType { UNIQUE, NODE_PROPERTY_EXISTS, RELATIONSHIP_PROPERTY_EXISTS }
 
+enum class RelKeyStrategy { DEFAULT, ALL }
+
 data class Constraint(val label: String?,
                       val properties: Set<String>,
                       val type: StreamsConstraintType)
@@ -55,3 +57,14 @@ data class Schema(val properties: Map<String, String> = emptyMap(),
 
 open class StreamsEvent(open val payload: Any)
 data class StreamsTransactionEvent(val meta: Meta, override val payload: Payload, val schema: Schema): StreamsEvent(payload)
+
+data class StreamsTransactionNodeEvent(val meta: Meta,
+                                       val payload: NodePayload,
+                                       val schema: Schema) {
+    fun toStreamsTransactionEvent() = StreamsTransactionEvent(this.meta, this.payload, this.schema)
+}
+data class StreamsTransactionRelationshipEvent(val meta: Meta,
+                                               val payload: RelationshipPayload,
+                                               val schema: Schema) {
+    fun toStreamsTransactionEvent() = StreamsTransactionEvent(this.meta, this.payload, this.schema)
+}

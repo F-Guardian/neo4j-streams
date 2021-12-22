@@ -1,5 +1,7 @@
 package integrations.kafka
 
+import integrations.kafka.KafkaTestUtils.createConsumer
+import extension.newDatabase
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.hamcrest.Matchers
@@ -22,14 +24,17 @@ class KafkaEventSinkDLQ : KafkaEventSinkBase() {
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_TOPIC, dlqTopic)
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_HEADERS, "true")
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_HEADER_PREFIX, "__streams.errors.")
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
         val data = mapOf("id" to null, "name" to "Andrea", "surname" to "Santurbano")
 
         var producerRecord = ProducerRecord(topic, UUID.randomUUID().toString(), JSONUtils.writeValueAsBytes(data))
         kafkaProducer.send(producerRecord).get()
-        val dlqConsumer = createConsumer<ByteArray, ByteArray>(ByteArrayDeserializer::class.java.name,
-                ByteArrayDeserializer::class.java.name,
-                dlqTopic)
+        val dlqConsumer = createConsumer<ByteArray, ByteArray>(
+                kafka = KafkaEventSinkSuiteIT.kafka,
+                schemaRegistry = KafkaEventSinkSuiteIT.schemaRegistry,
+                keyDeserializer = ByteArrayDeserializer::class.java.name,
+                valueDeserializer = ByteArrayDeserializer::class.java.name,
+                topics = *arrayOf(dlqTopic))
 
         dlqConsumer.let {
             Assert.assertEventually(ThrowingSupplier<Boolean, Exception> {
@@ -59,16 +64,19 @@ class KafkaEventSinkDLQ : KafkaEventSinkBase() {
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_TOPIC, dlqTopic)
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_HEADERS, "true")
         graphDatabaseBuilder.setConfig("streams.sink."+ErrorService.ErrorConfig.DLQ_HEADER_PREFIX, "__streams.errors.")
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
 
         val data = """{id: 1, "name": "Andrea", "surname": "Santurbano"}"""
 
         var producerRecord = ProducerRecord(topic, UUID.randomUUID().toString(),
                 data.toByteArray())
         kafkaProducer.send(producerRecord).get()
-        val dlqConsumer = createConsumer<ByteArray, ByteArray>(ByteArrayDeserializer::class.java.name,
-                ByteArrayDeserializer::class.java.name,
-                dlqTopic)
+        val dlqConsumer = createConsumer<ByteArray, ByteArray>(
+                kafka = KafkaEventSinkSuiteIT.kafka,
+                schemaRegistry = KafkaEventSinkSuiteIT.schemaRegistry,
+                keyDeserializer = ByteArrayDeserializer::class.java.name,
+                valueDeserializer = ByteArrayDeserializer::class.java.name,
+                topics = *arrayOf(dlqTopic))
         dlqConsumer.let {
             Assert.assertEventually(ThrowingSupplier<Boolean, Exception> {
                 val query = """

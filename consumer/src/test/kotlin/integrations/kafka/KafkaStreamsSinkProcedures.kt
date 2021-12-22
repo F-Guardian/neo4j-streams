@@ -1,7 +1,9 @@
 package integrations.kafka
 
+import integrations.kafka.KafkaTestUtils.createConsumer
 import io.confluent.kafka.serializers.KafkaAvroDeserializer
 import kotlinx.coroutines.*
+import extension.newDatabase
 import org.apache.avro.SchemaBuilder
 import org.apache.avro.generic.GenericRecordBuilder
 import org.apache.kafka.clients.producer.ProducerRecord
@@ -9,10 +11,12 @@ import org.apache.kafka.common.TopicPartition
 import org.junit.Test
 import org.neo4j.kernel.impl.proc.Procedures
 import org.neo4j.kernel.internal.GraphDatabaseAPI
+import streams.events.StreamsPluginStatus
 import streams.extensions.toMap
 import streams.procedures.StreamsSinkProcedures
 import streams.serialization.JSONUtils
 import java.util.*
+import java.util.stream.Collectors
 import kotlin.test.*
 
 @Suppress("UNCHECKED_CAST", "DEPRECATION")
@@ -34,7 +38,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
     @Test
     fun shouldConsumeDataFromProcedureWithSinkDisabled() {
         graphDatabaseBuilder.setConfig("streams.sink.enabled", "false")
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "bar"
@@ -43,7 +47,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldConsumeDataFromProcedure() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "foo"
@@ -52,7 +56,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldTimeout() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val result = db.execute("CALL streams.consume('foo1', {timeout: 2000}) YIELD event RETURN event")
@@ -61,7 +65,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldReadArrayOfJson() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "array-topic"
@@ -82,7 +86,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldReadSimpleDataType() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "simple-data"
@@ -114,7 +118,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldReadATopicPartitionStartingFromAnOffset() = runBlocking {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "read-from-range"
@@ -144,7 +148,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldReadFromLatest() = runBlocking {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "simple-data-from-latest"
@@ -178,7 +182,7 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
 
     @Test
     fun shouldNotCommit() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val topic = "simple-data"
@@ -200,14 +204,16 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
         assertTrue { searchResultMap.containsKey("count") }
         assertEquals(1L, searchResultMap["count"])
 
-        val kafkaConsumer = createConsumer<String, ByteArray>()
+        val kafkaConsumer = createConsumer<ByteArray, ByteArray>(
+                kafka = KafkaEventSinkSuiteIT.kafka,
+                schemaRegistry = KafkaEventSinkSuiteIT.schemaRegistry)
         val offsetAndMetadata = kafkaConsumer.committed(TopicPartition(topic, partition))
         assertNull(offsetAndMetadata)
     }
 
     @Test
     fun `should consume AVRO messages`() {
-        db = graphDatabaseBuilder.newGraphDatabase() as GraphDatabaseAPI
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         db.dependencyResolver.resolveDependency(Procedures::class.java)
                 .registerProcedure(StreamsSinkProcedures::class.java, true)
         val PLACE_SCHEMA = SchemaBuilder.builder("com.namespace")
@@ -239,5 +245,71 @@ class KafkaStreamsSinkProcedures : KafkaEventSinkBase() {
         val event = resultMap["event"] as Map<String, Any?>
         val resultData = event["data"] as Map<String, Any?>
         assertEquals(struct.toMap(), resultData)
+    }
+
+    @Test
+    fun `should report the streams sink config`() {
+        // given
+        db = graphDatabaseBuilder.newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
+        db.dependencyResolver.resolveDependency(Procedures::class.java)
+                .registerProcedure(StreamsSinkProcedures::class.java, true)
+        val expected = mapOf("invalid_topics" to emptyList<String>(),
+                "streams.sink.topic.pattern.relationship" to emptyMap<String, Any>(),
+                "streams.sink.topic.cud" to emptySet<String>(),
+                "streams.sink.topic.cdc.sourceId" to emptySet<String>(),
+                "streams.sink.topic.cypher" to emptyMap<String, Any>(),
+                "streams.sink.topic.cdc.schema" to emptySet<String>(),
+                "streams.sink.topic.pattern.node" to emptyMap<String, Any>(),
+                "streams.sink.errors" to emptyMap<String, Any>(),
+                "streams.cluster.only" to false,
+                "streams.sink.poll.interval" to 0L,
+                "streams.sink.source.id.strategy.config" to mapOf("labelName" to "SourceEvent", "idName" to "sourceId"))
+
+        // when
+        val result = db.execute("CALL streams.sink.config()")
+
+        // then
+        val actual = result.stream()
+                .collect(Collectors.toList())
+                .map { it.getValue("name").toString() to it.getValue("value") }
+                .toMap()
+        assertEquals(expected, actual)
+    }
+
+    @Test
+    fun `should report the streams sink status RUNNING`() = runBlocking {
+        // given
+        graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.shouldWriteCypherQuery", cypherQueryTemplate)
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
+        db.dependencyResolver.resolveDependency(Procedures::class.java)
+                .registerProcedure(StreamsSinkProcedures::class.java, true)
+        val expectedRunning = listOf(mapOf("name" to "status", "value" to StreamsPluginStatus.RUNNING.toString()))
+
+        // when
+        val result = db.execute("CALL streams.sink.status()")
+
+        // then
+        val actual = result.stream()
+                .collect(Collectors.toList())
+        assertEquals(expectedRunning, actual)
+    }
+
+    @Test
+    fun `should report the streams sink status STOPPED`() {
+        // given
+        graphDatabaseBuilder.setConfig("streams.sink.topic.cypher.shouldWriteCypherQuery", cypherQueryTemplate)
+        db = graphDatabaseBuilder.newDatabase() as GraphDatabaseAPI
+        db.dependencyResolver.resolveDependency(Procedures::class.java)
+                .registerProcedure(StreamsSinkProcedures::class.java, true)
+        val expectedRunning = listOf(mapOf("name" to "status", "value" to StreamsPluginStatus.STOPPED.toString()))
+        db.execute("CALL streams.sink.stop()")
+
+        // when
+        val result = db.execute("CALL streams.sink.status()")
+
+        // then
+        val actual = result.stream()
+                .collect(Collectors.toList())
+        assertEquals(expectedRunning, actual)
     }
 }

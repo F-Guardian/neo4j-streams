@@ -1,8 +1,11 @@
 package streams.utils
 
+import extension.newDatabase
 import org.junit.*
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.test.TestGraphDatabaseFactory
+import streams.StreamsEventSinkAvailabilityListener
+import streams.events.StreamsPluginStatus
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -15,7 +18,7 @@ class Neo4jUtilsTest {
         fun setUp() {
             db = TestGraphDatabaseFactory()
                     .newImpermanentDatabaseBuilder()
-                    .newGraphDatabase() as GraphDatabaseAPI
+                    .newDatabase(StreamsPluginStatus.STOPPED) as GraphDatabaseAPI
         }
 
         @AfterClass
@@ -27,6 +30,7 @@ class Neo4jUtilsTest {
 
     @Test
     fun shouldCheckIfIsWriteableInstance() {
+        StreamsEventSinkAvailabilityListener.setAvailable(db, true)
         val isWriteableInstance = Neo4jUtils.isWriteableInstance(db)
         assertTrue { isWriteableInstance }
     }
@@ -35,6 +39,11 @@ class Neo4jUtilsTest {
     fun shouldCheckIfIsACluster() {
         val isEnterprise = Neo4jUtils.isCluster(db)
         assertFalse { isEnterprise }
+    }
+
+    @Test
+    fun `should not have APOC`() {
+        assertFalse { Neo4jUtils.hasApoc(db) }
     }
 
 }
