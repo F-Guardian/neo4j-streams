@@ -153,9 +153,9 @@ class KafkaEventSink(private val config: StreamsConfig,
                 while (isActive) {
                     val timeMillis = if (Neo4jUtils.isWriteableInstance(db)) {
                         eventConsumer.read { topic, data ->
-                            if (log.isDebugEnabled) {
-                                log.debug("Reading data from topic $topic")
-                            }
+//                            if (log.isDebugEnabled) {
+//                                log.debug("Reading data from topic $topic")
+//                            }
                             queryExecution.writeForTopic(topic, data)
                         }
                         streamsConfig.pollInterval

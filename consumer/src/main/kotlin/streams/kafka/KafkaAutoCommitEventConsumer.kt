@@ -90,11 +90,27 @@ open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfigurati
     }
 
     fun executeAction(action: (String, List<StreamsSinkEntity>) -> Unit, topic: String, topicRecords: Iterable<ConsumerRecord<out Any, out Any>>) {
-        try {
-            action(topic, topicRecords.map { it.toStreamsSinkEntity() })
-        } catch (e: Exception) {
-            errorService.report(topicRecords.map { ErrorData.from(it, e, this::class.java) })
-        }
+//        try {
+//            action(topic, topicRecords.map { it.toStreamsSinkEntity() })
+//        } catch (e: Exception) {
+//            errorService.report(topicRecords.map { ErrorData.from(it, e, this::class.java) })
+//        }
+
+        var failedCount = 0
+        do {
+            try {
+                action(topic, topicRecords.map { it.toStreamsSinkEntity() })
+                failedCount = 0
+            } catch (e: Exception) {
+//                errorService.report(topicRecords.map { ErrorData.from(it, e, this::class.java) })
+                // 无限重试，记录log
+                if (++failedCount % 5 == 0) {
+                    topicRecords.forEach { log.warn("Record -> " + it.key() + ":" + it.value()) }
+                    log.warn("Write to db failed, try $failedCount times. $e")
+                    Thread.sleep(5000)
+                }
+            }
+        } while (failedCount > 0)
     }
 
     fun readFromPartition(kafkaTopicConfig: KafkaTopicConfig,

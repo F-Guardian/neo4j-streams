@@ -112,7 +112,11 @@ class PreviousTransactionDataBuilder {
                                 .filterKeys { startLabels.contains(it) }
                                 .flatMap { it.value }
                     }
-                    val startNodeKeys = getNodeKeys(startLabels, it.startNode.propertyKeys.toSet(), startNodeConstraints)
+                    var startNodePropertyKeySet = it.startNode.propertyKeys.toSet()
+                    if (startNodePropertyKeySet.contains("gid")) {
+                        startNodePropertyKeySet = setOf("gid")
+                    }
+                    val startNodeKeys = getNodeKeys(startLabels, startNodePropertyKeySet, startNodeConstraints)
                             .toTypedArray()
 
 
@@ -122,7 +126,11 @@ class PreviousTransactionDataBuilder {
                                 .filterKeys { endLabels.contains(it) }
                                 .flatMap { it.value }
                     }
-                    val endNodeKeys = getNodeKeys(endLabels, it.endNode.propertyKeys.toSet(), endNodeConstraints)
+                    var endNodePropertyKeySet = it.endNode.propertyKeys.toSet()
+                    if (endNodePropertyKeySet.contains("gid")) {
+                        endNodePropertyKeySet = setOf("gid")
+                    }
+                    val endNodeKeys = getNodeKeys(endLabels, endNodePropertyKeySet, endNodeConstraints)
                             .toTypedArray()
 
                     val payload = RelationshipPayloadBuilder()
@@ -146,14 +154,20 @@ class PreviousTransactionDataBuilder {
 
     fun withLabels(assignedLabels: Iterable<LabelEntry>, removedLabels: Iterable<LabelEntry>): PreviousTransactionDataBuilder {
         val assignedPreviousLabels = assignedLabels
-                .map { labelEntry -> Pair(labelEntry.node().id, labelEntry.node().labels.filter { it != labelEntry.label() }.map { it.name() }.toList()) } // [ (nodeId, [label]) ]
-                .groupBy({it.first},{it.second}) // { nodeId -> [ [label] ] }
-                .mapValues { it.value.flatten() } // { nodeId -> [label] }
+            .map { labelEntry -> Pair(labelEntry.node().id, labelEntry) } // [ nodeId -> [labelEntry] ]
+            .groupBy ({it.first},{it.second}) // { nodeId -> [labelEntry] }
+            .mapValues { mergedLabel ->
+                val labelEntries = mergedLabel.value
+                val node = labelEntries.first().node()
+                node.labels.filter { label -> !labelEntries.map { it.label().name() }.contains(label.name()) }.map { label -> label.name() }
+            } // { nodeId -> [label] }
+
+        val assignedLabelsMap = assignedLabels.map {labelEntry -> Pair(labelEntry.node().id, labelEntry.label().name())}.groupBy({it.first},{it.second})
 
         val removedPreviousLabels = removedLabels
-                .map { labelEntry -> Pair(labelEntry.node().id, labelEntry.node().labelNames().toList().plus(labelEntry.label().name())) } // [ (nodeId, [label]) ]
-                .groupBy({it.first},{it.second}) // { nodeId -> [ [label] ] }
-                .mapValues { it.value.flatten() } // { nodeId -> [label] }
+            .map { labelEntry -> Pair(labelEntry.node().id, labelEntry.node().labelNames().toList().plus(labelEntry.label().name())) } // [ (nodeId, [label]) ]
+            .groupBy({it.first},{it.second}) // { nodeId -> [ [label] ] }
+            .mapValues { (it.value.flatten().toSet() - assignedLabelsMap.getOrDefault(it.key, emptyList())).toList() } // { nodeId -> [label] }
 
 
         updatedNodes = updatedNodes.plus(assignedLabels

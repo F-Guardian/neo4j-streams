@@ -18,7 +18,7 @@ import kotlin.reflect.full.isSubclassOf
 
 abstract class StreamsPoint { abstract val crs: String }
 data class StreamsPointCartesian(override val crs: String, val x: Double, val y: Double, val z: Double? = null): StreamsPoint()
-data class StreamsPointWgs(override val crs: String, val latitude: Double, val longitude: Double, val height: Double? = null): StreamsPoint()
+data class StreamsPointWgs(override val crs: String, val longitude: Double, val latitude: Double, val height: Double? = null): StreamsPoint()
 
 fun Point.toStreamsPoint(): StreamsPoint {
     val crsType = this.crs.type

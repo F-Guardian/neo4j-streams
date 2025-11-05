@@ -40,7 +40,7 @@ class StreamsEventSinkAvailabilityListener(dependencies: StreamsEventSinkExtensi
                         setAvailable(db, true)
                         if (eventSink == null) {
                             val neo4jStrategyStorage = Neo4jStreamsStrategyStorage(streamsTopicService, configuration, db.databaseName())
-                            val streamsQueryExecution = StreamsEventSinkQueryExecution(db, logService.getUserLog(StreamsEventSinkQueryExecution::class.java),
+                            val streamsQueryExecution = StreamsEventSinkQueryExecution(db, logService.getInternalLog(StreamsEventSinkQueryExecution::class.java),
                                     neo4jStrategyStorage)
                             // Create the Sink if not exists
                             eventSink = StreamsEventSinkFactory

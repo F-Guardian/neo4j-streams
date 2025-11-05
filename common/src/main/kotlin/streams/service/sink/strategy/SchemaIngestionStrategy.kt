@@ -8,6 +8,8 @@ import streams.utils.IngestionUtils.getNodeKeysAsString
 import streams.utils.SchemaUtils.getNodeKeys
 import streams.utils.SchemaUtils.toStreamsTransactionEvent
 import streams.utils.StreamsUtils
+import java.util.*
+import kotlin.collections.HashMap
 
 
 class SchemaIngestionStrategy: IngestionStrategy {
@@ -32,7 +34,7 @@ class SchemaIngestionStrategy: IngestionStrategy {
             .groupBy { it.first }
             .mapValues { it.value.map { it.second } }
 
-    private fun createRelationshipMetadata(payload: RelationshipPayload, startNodeConstraints: List<Constraint>, endNodeConstraints: List<Constraint>, withProperties: Boolean): Pair<RelationshipSchemaMetadata, Map<String, Map<String, Any>>>? {
+    private fun createRelationshipMetadata(payload: RelationshipPayload, startNodeConstraints: List<Constraint>, endNodeConstraints: List<Constraint>, withProperties: Boolean): Pair<RelationshipSchemaMetadata, Map<String, Any>>? {
         val startNodeKeys = getNodeKeys(
                 labels = payload.start.labels.orEmpty(),
                 propertyKeys = payload.start.ids.keys,
@@ -47,12 +49,26 @@ class SchemaIngestionStrategy: IngestionStrategy {
         return if (idsAreEmpty(start, end)) {
             null
         } else {
-            val value = if (withProperties) {
-                val properties = payload.after?.properties ?: payload.before?.properties ?: emptyMap()
-                mapOf("start" to start, "end" to end, "properties" to properties)
-            } else {
-                mapOf("start" to start, "end" to end)
+//            val value = if (withProperties) {
+//                val properties = payload.after?.properties ?: payload.before?.properties ?: emptyMap()
+//                mapOf("start" to start, "end" to end, "properties" to properties)
+//            } else {
+//                mapOf("start" to start, "end" to end)
+//            }
+
+            val properties = payload.after?.properties ?: payload.before?.properties ?: emptyMap()
+            val afterGid = payload.after?.properties?.get("gid")
+            val gid = if (Objects.nonNull(afterGid)) afterGid else payload.before?.properties?.get("gid")
+            val value = HashMap<String, Any>()
+            value["start"] = start
+            value["end"] = end
+            if (withProperties) {
+                value["properties"] = properties
             }
+            if (gid != null) {
+                value["gid"] = gid
+            }
+
             val key = RelationshipSchemaMetadata(
                     label = payload.label,
                     startLabels = payload.start.labels.orEmpty().filter { label -> startNodeConstraints.any { it.label == label } },

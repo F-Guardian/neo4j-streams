@@ -202,14 +202,22 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                             .withProperties(it.allProperties)
                             .build()
 
+                    var startNodePropertyKeySet = it.startNode.propertyKeys.toSet()
+                    if (startNodePropertyKeySet.contains("gid")) {
+                        startNodePropertyKeySet = setOf("gid")
+                    }
                     val startLabels = it.startNode.labelNames()
                     val startNodeConstraints = filterNodeConstraintCache(startLabels)
-                    val startKeys = getNodeKeys(startLabels, it.startNode.propertyKeys.toSet(), startNodeConstraints)
+                    val startKeys = getNodeKeys(startLabels, startNodePropertyKeySet, startNodeConstraints)
                             .toTypedArray()
 
+                    var endNodePropertyKeySet = it.endNode.propertyKeys.toSet()
+                    if (endNodePropertyKeySet.contains("gid")) {
+                        endNodePropertyKeySet = setOf("gid")
+                    }
                     val endLabels = it.endNode.labelNames()
                     val endNodeConstraints = filterNodeConstraintCache(endLabels)
-                    val endKeys = getNodeKeys(endLabels, it.endNode.propertyKeys.toSet(), endNodeConstraints)
+                    val endKeys = getNodeKeys(endLabels, endNodePropertyKeySet, endNodeConstraints)
                             .toTypedArray()
 
                     val payload = RelationshipPayloadBuilder()
@@ -250,11 +258,19 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                         it.endNode.propertyKeys
                     }
 
+                    var startNodePropertyKeySet = startPropertyKeys.toSet()
+                    if (startNodePropertyKeySet.contains("gid")) {
+                        startNodePropertyKeySet = setOf("gid")
+                    }
                     val startNodeConstraints = filterNodeConstraintCache(startNodeLabels)
-                    val startKeys = getNodeKeys(startNodeLabels, startPropertyKeys.toSet(), startNodeConstraints)
+                    val startKeys = getNodeKeys(startNodeLabels, startNodePropertyKeySet, startNodeConstraints)
 
+                    var endNodePropertyKeySet = endPropertyKeys.toSet()
+                    if (endNodePropertyKeySet.contains("gid")) {
+                        endNodePropertyKeySet = setOf("gid")
+                    }
                     val endNodeConstraints = filterNodeConstraintCache(endNodeLabels)
-                    val endKeys = getNodeKeys(endNodeLabels, endPropertyKeys.toSet(), endNodeConstraints)
+                    val endKeys = getNodeKeys(endNodeLabels, endNodePropertyKeySet, endNodeConstraints)
 
                     val startProperties = if (isStartNodeDeleted) {
                         val payload = builder.nodeDeletedPayload(it.startNode.id)!!
