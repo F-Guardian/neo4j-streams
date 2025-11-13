@@ -15,10 +15,24 @@ Is the transaction event handler events that sends data to a Kafka topic
 // [source,adoc,subs="verbatim"]
 include::producer-configuration.adoc[]
 
+== Serializers
+
+To allow insertion of keys in any format (e.g. through `streams.publish` procedure)
+**the `key.serializer` is set with the `org.apache.kafka.common.serialization.ByteArraySerializer`**
+like `value.serializer`
+
+
+include::message-structure.adoc[]
+
 [#source-patterns]
 == Patterns
 
 include::producer-patterns.adoc[]
+
+=== Relationship key strategy
+
+include::key-strategy.adoc[]
+
 
 == Transaction Event Handler
 

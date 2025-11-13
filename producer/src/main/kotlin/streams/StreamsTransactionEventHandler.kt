@@ -4,45 +4,54 @@ import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Transaction
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
+import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.event.TransactionData
 import org.neo4j.graphdb.event.TransactionEventListener
-import streams.events.Constraint
-import streams.events.EntityType
-import streams.events.NodeChangeBuilder
-import streams.events.NodePayload
-import streams.events.NodePayloadBuilder
-import streams.events.OperationType
-import streams.events.Payload
-import streams.events.PreviousTransactionData
-import streams.events.PreviousTransactionDataBuilder
-import streams.events.RelationshipChangeBuilder
-import streams.events.RelationshipPayload
-import streams.events.RelationshipPayloadBuilder
-import streams.events.Schema
-import streams.events.SchemaBuilder
-import streams.events.StreamsEventMetaBuilder
-import streams.events.StreamsTransactionEvent
-import streams.events.StreamsTransactionEventBuilder
+import org.neo4j.kernel.internal.GraphDatabaseAPI
+import streams.events.*
 import streams.extensions.labelNames
+import streams.extensions.registerTransactionEventListener
+import streams.extensions.unregisterTransactionEventListener
 import streams.utils.SchemaUtils.getNodeKeys
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 
 class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
-                                     private val streamsConstraintsService: StreamsConstraintsService,
-                                     private val configuration: StreamsEventRouterConfiguration)
+                                     private val db: GraphDatabaseAPI,
+                                     private val streamsConstraintsService: StreamsConstraintsService)
     : TransactionEventListener<PreviousTransactionData> {
+
+    private val status = AtomicReference(StreamsPluginStatus.UNKNOWN)
+
+    fun start() {
+        db.registerTransactionEventListener(this)
+        status.set(StreamsPluginStatus.RUNNING)
+    }
+
+    fun stop() {
+        db.unregisterTransactionEventListener(this)
+        status.set(StreamsPluginStatus.STOPPED)
+    }
+
+    fun status() = status.get()
+
+    private val configuration = router.eventRouterConfiguration
 
     private val nodeRoutingLabels = configuration.nodeRouting
             .flatMap { it.labels }
-    private val relRoutingTypes = configuration.relRouting
-            .map { it.name }
+    private val relRoutingTypesAndStrategies = configuration.relRouting
+            .map { it.name to it.relKeyStrategy }.toMap()
 
     private val nodeAll = configuration.nodeRouting.any { it.labels.isEmpty() }
     private val relAll = configuration.relRouting.any { it.name.isNullOrBlank() }
 
-    private val hostName = InetAddress.getLocalHost().hostName
+    // As getting host name in some network configuration can be expensive
+    // this can lead to slowness in the start-up process (i.e. slowing the leader
+    // election in case of a Causal Cluster). We define it a `lazy` value
+    // computing it at the first invocation
+    private val hostName by lazy { InetAddress.getLocalHost().hostName }
 
     /**
      * Wrap the payload into a StreamsTransactionEvent for the eventId
@@ -196,7 +205,7 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
         }
 
         val createdRelPayload = allOrFiltered(txd.createdRelationships(), relAll)
-                { relRoutingTypes.contains(it.type.name()) }
+                { relRoutingTypesAndStrategies.containsKey(it.type.name()) }
                 .map {
                     val afterRel = RelationshipChangeBuilder()
                             .withProperties(it.allProperties)
@@ -206,10 +215,12 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                     if (startNodePropertyKeySet.contains("gid")) {
                         startNodePropertyKeySet = setOf("gid")
                     }
+                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.DEFAULT)
+
                     val startLabels = it.startNode.labelNames()
                     val startNodeConstraints = filterNodeConstraintCache(startLabels)
-                    val startKeys = getNodeKeys(startLabels, startNodePropertyKeySet, startNodeConstraints)
-                            .toTypedArray()
+                    val startKeys = getNodeKeys(startLabels, startNodePropertyKeySet, startNodeConstraints, relKeyStrategy)
+                        .toTypedArray()
 
                     var endNodePropertyKeySet = it.endNode.propertyKeys.toSet()
                     if (endNodePropertyKeySet.contains("gid")) {
@@ -217,8 +228,8 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                     }
                     val endLabels = it.endNode.labelNames()
                     val endNodeConstraints = filterNodeConstraintCache(endLabels)
-                    val endKeys = getNodeKeys(endLabels, endNodePropertyKeySet, endNodeConstraints)
-                            .toTypedArray()
+                    val endKeys = getNodeKeys(endLabels, endNodePropertyKeySet, endNodeConstraints, relKeyStrategy)
+                        .toTypedArray()
 
                     val payload = RelationshipPayloadBuilder()
                             .withId(it.id.toString())
@@ -233,7 +244,7 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                 .toMap()
 
         val deletedRelPayload = allOrFiltered(txd.deletedRelationships(), relAll)
-                { relRoutingTypes.contains(it.type.name()) }
+                { relRoutingTypesAndStrategies.containsKey(it.type.name()) }
                 .map {
                     val beforeRel = RelationshipChangeBuilder()
                             .withProperties(deletedRelProperties.getOrDefault(it.id, emptyMap()))
@@ -257,20 +268,13 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                     } else {
                         it.endNode.propertyKeys
                     }
+                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.DEFAULT)
 
-                    var startNodePropertyKeySet = startPropertyKeys.toSet()
-                    if (startNodePropertyKeySet.contains("gid")) {
-                        startNodePropertyKeySet = setOf("gid")
-                    }
                     val startNodeConstraints = filterNodeConstraintCache(startNodeLabels)
-                    val startKeys = getNodeKeys(startNodeLabels, startNodePropertyKeySet, startNodeConstraints)
+                    val startKeys = getNodeKeys(startNodeLabels, startPropertyKeys.toSet(), startNodeConstraints, relKeyStrategy)
 
-                    var endNodePropertyKeySet = endPropertyKeys.toSet()
-                    if (endNodePropertyKeySet.contains("gid")) {
-                        endNodePropertyKeySet = setOf("gid")
-                    }
                     val endNodeConstraints = filterNodeConstraintCache(endNodeLabels)
-                    val endKeys = getNodeKeys(endNodeLabels, endNodePropertyKeySet, endNodeConstraints)
+                    val endKeys = getNodeKeys(endNodeLabels, endPropertyKeys.toSet(), endNodeConstraints, relKeyStrategy)
 
                     val startProperties = if (isStartNodeDeleted) {
                         val payload = builder.nodeDeletedPayload(it.startNode.id)!!
@@ -303,6 +307,7 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
         return builder.withRelProperties(txd.assignedRelationshipProperties(), removedRelsProperties)
                 .withRelCreatedPayloads(createdRelPayload)
                 .withRelDeletedPayloads(deletedRelPayload)
+                .withRelRoutingTypesAndStrategies(relRoutingTypesAndStrategies)
     }
 
     override fun afterRollback(p0: TransactionData?, p1: PreviousTransactionData?, db: GraphDatabaseService?) {}

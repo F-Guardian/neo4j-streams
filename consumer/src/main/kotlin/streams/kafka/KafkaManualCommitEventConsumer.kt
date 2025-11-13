@@ -13,7 +13,8 @@ import java.time.Duration
 
 class KafkaManualCommitEventConsumer(config: KafkaSinkConfiguration,
                                      private val log: Log,
-                                     topics: Set<String>): KafkaAutoCommitEventConsumer(config, log, topics) {
+                                     topics: Set<String>,
+                                     dbName: String): KafkaAutoCommitEventConsumer(config, log, topics, dbName) {
 
     private val asyncCommit = config.streamsAsyncCommit
 
@@ -63,7 +64,7 @@ class KafkaManualCommitEventConsumer(config: KafkaSinkConfiguration,
     }
 
     private fun commitData(commit: Boolean, topicMap: Map<TopicPartition, OffsetAndMetadata>) {
-        if (commit) {
+        if (commit && topicMap.isNotEmpty()) {
             if (asyncCommit) {
                 if (log.isDebugEnabled) {
                     log.debug("Committing data in async")

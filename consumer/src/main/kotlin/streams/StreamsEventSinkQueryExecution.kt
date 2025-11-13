@@ -7,6 +7,7 @@ import streams.service.StreamsSinkService
 import streams.service.StreamsStrategyStorage
 import streams.utils.Neo4jUtils
 import java.util.concurrent.atomic.AtomicReference
+import streams.utils.ConsumerUtils
 
 class NotInWriteableInstanceException(message: String): RuntimeException(message)
 

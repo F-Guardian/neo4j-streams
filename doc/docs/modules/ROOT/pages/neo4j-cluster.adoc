@@ -45,7 +45,9 @@ For further information on routing drivers, see the link:https://neo4j.com/docs/
 When using Neo4j Streams as a plugin together with a cluster, there are several things to keep in mind:
 
 * The plugin must be present in the plugins directory of _all cluster members_, and not just one.
-* The configuration settings must be present in _all of the neo4j.conf files_, not just one.
+* The configuration settings must be present in:
+- *all neo4j.conf files* for versions prior of `4.0.7`, and not just one;
+- *all streams.conf files* for versions since `4.0.7`, and not just one.
 
 Through the course of the cluster lifecycle, the leader may change; for this reason the plugin must be everywhere,
 and not just on the leader.
@@ -69,6 +71,6 @@ Sometimes there will be remote applications that talk to Neo4j via official driv
 streams functionality.  Best practices in these cases are:
 
 * Always use a `bolt+routing://` driver URI when communicating with the cluster in the client application.
-* Use link:https://neo4j.com/docs/driver-manual/current/sessions-transactions/#driver-transactions[Explicit Write Transactions] in
+* Use link:https://neo4j.com/docs/driver-manual/current/session-api/configuration/#driver-simple-transaction-fn[Explicit Write Transactions] in
 your client application when using procedure calls such as `CALL streams.consume` to ensure that the routing
 driver routes the query to the leader.

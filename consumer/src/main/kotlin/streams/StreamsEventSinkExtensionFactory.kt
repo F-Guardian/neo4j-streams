@@ -9,8 +9,8 @@ import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.internal.LogService
-import streams.config.StreamsConfig
 import streams.extensions.isSystemDb
+import java.util.concurrent.atomic.AtomicReference
 
 class StreamsEventSinkExtensionFactory : ExtensionFactory<StreamsEventSinkExtensionFactory.Dependencies>(ExtensionType.DATABASE,"Streams.Consumer") {
 
@@ -22,7 +22,6 @@ class StreamsEventSinkExtensionFactory : ExtensionFactory<StreamsEventSinkExtens
         fun graphdatabaseAPI(): GraphDatabaseAPI
         fun dbms(): DatabaseManagementService
         fun log(): LogService
-        fun streamsConfig(): StreamsConfig
         fun availabilityGuard(): AvailabilityGuard
     }
 
@@ -30,19 +29,25 @@ class StreamsEventSinkExtensionFactory : ExtensionFactory<StreamsEventSinkExtens
         private val db = dependencies.graphdatabaseAPI()
         private val logService = dependencies.log()
         private val streamsLog = logService.getUserLog(StreamsEventLifecycle::class.java)
-        private val availabilityListener = StreamsEventSinkAvailabilityListener(dependencies)
+        private val availabilityListener: AtomicReference<StreamsEventSinkAvailabilityListener> = AtomicReference(null)
+
+        private fun createStreamsEventSinkAvailabilityListener() = if (db.isSystemDb()) {
+            null
+        } else {
+            StreamsEventSinkAvailabilityListener(dependencies)
+        }
 
         override fun start() {
-            if (db.isSystemDb()) {
-                return
-            }
-            dependencies.availabilityGuard().addListener(availabilityListener)
+            availabilityListener.updateAndGet { it ?: createStreamsEventSinkAvailabilityListener() }
+                    ?.let { dependencies.availabilityGuard().addListener(it) }
         }
 
         override fun stop() {
             try {
-                availabilityListener.unavailable()
-                StreamsEventSinkAvailabilityListener.remove(db)
+                availabilityListener.getAndSet(null)?.let {
+                    it.shutdown()
+                    dependencies.availabilityGuard().removeListener(it)
+                }
             } catch (e : Throwable) {
                 val message = e.message ?: "Generic error, please check the stack trace:"
                 streamsLog.error(message, e)

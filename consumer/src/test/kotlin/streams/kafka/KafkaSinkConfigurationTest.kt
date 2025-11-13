@@ -22,31 +22,13 @@ import kotlin.test.assertTrue
 
 class KafkaSinkConfigurationTest {
 
-    lateinit var streamsConfig: StreamsConfig
-    val defaultDbName = "neo4j"
-
-    @Before
-    fun setUp() {
-        val dbms = Mockito.mock(DatabaseManagementService::class.java)
-        val db = Mockito.mock(GraphDatabaseAPI::class.java)
-        val tx = Mockito.mock(Transaction::class.java)
-        val result = Mockito.mock(Result::class.java)
-        val resource = Mockito.mock(ResourceIterator::class.java) as ResourceIterator<String>
-        Mockito.`when`(dbms.database(Mockito.anyString())).thenReturn(db)
-        Mockito.`when`(db.beginTx()).thenReturn(tx)
-        Mockito.`when`(tx.execute(Mockito.anyString())).thenReturn(result)
-        Mockito.`when`(result.columnAs<String>(Mockito.anyString())).thenReturn(resource)
-        Mockito.`when`(resource.hasNext()).thenReturn(true)
-        Mockito.`when`(resource.next()).thenReturn(defaultDbName)
-        streamsConfig = StreamsConfig(NullLog.getInstance(), dbms)
-    }
+    private val defaultDbName = "neo4j"
 
     @Test
     fun `should return default configuration`() {
         val default = KafkaSinkConfiguration()
         StreamsSinkConfigurationTest.testDefaultConf(default.streamsSinkConfiguration)
 
-        assertEquals("localhost:2181", default.zookeeperConnect)
         assertEquals("localhost:9092", default.bootstrapServers)
         assertEquals("neo4j", default.groupId)
         assertEquals("earliest", default.autoOffsetReset)
@@ -62,13 +44,11 @@ class KafkaSinkConfigurationTest {
         val topic = "topic-neo"
         val topicKey = "streams.sink.topic.cypher.$topic"
         val topicValue = "MERGE (n:Label{ id: event.id }) "
-        val zookeeper = "zookeeper:2181"
         val bootstrap = "bootstrap:9092"
         val group = "foo"
         val autoOffsetReset = "latest"
         val autoCommit = "false"
         val config = mapOf(topicKey to topicValue,
-                "kafka.zookeeper.connect" to zookeeper,
                 "kafka.bootstrap.servers" to bootstrap,
                 "kafka.auto.offset.reset" to autoOffsetReset,
                 "kafka.enable.auto.commit" to autoCommit,
@@ -76,7 +56,7 @@ class KafkaSinkConfigurationTest {
                 "kafka.streams.async.commit" to "true",
                 "kafka.key.deserializer" to ByteArrayDeserializer::class.java.name,
                 "kafka.value.deserializer" to KafkaAvroDeserializer::class.java.name)
-        val expectedMap = mapOf("zookeeper.connect" to zookeeper, "bootstrap.servers" to bootstrap,
+        val expectedMap = mapOf("bootstrap.servers" to bootstrap,
                 "auto.offset.reset" to autoOffsetReset, "enable.auto.commit" to autoCommit, "group.id" to group,
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG to ByteArrayDeserializer::class.java.toString(),
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG to ByteArrayDeserializer::class.java.toString(),
@@ -84,11 +64,9 @@ class KafkaSinkConfigurationTest {
                 "key.deserializer" to ByteArrayDeserializer::class.java.name,
                 "value.deserializer" to KafkaAvroDeserializer::class.java.name)
 
-        streamsConfig.config.putAll(config)
-        val kafkaSinkConfiguration = KafkaSinkConfiguration.create(streamsConfig, defaultDbName)
+        val kafkaSinkConfiguration = KafkaSinkConfiguration.create(config, defaultDbName, isDefaultDb = true)
         StreamsSinkConfigurationTest.testFromConf(kafkaSinkConfiguration.streamsSinkConfiguration, topic, topicValue)
         assertEquals(emptyMap(), kafkaSinkConfiguration.extraProperties)
-        assertEquals(zookeeper, kafkaSinkConfiguration.zookeeperConnect)
         assertEquals(bootstrap, kafkaSinkConfiguration.bootstrapServers)
         assertEquals(autoOffsetReset, kafkaSinkConfiguration.autoOffsetReset)
         assertEquals(group, kafkaSinkConfiguration.groupId)
@@ -98,7 +76,7 @@ class KafkaSinkConfigurationTest {
                 .toMap()
         assertEquals(expectedMap, resultMap)
 
-        val streamsConfig = StreamsSinkConfiguration.from(streamsConfig, defaultDbName)
+        val streamsConfig = StreamsSinkConfiguration.from(config, defaultDbName, isDefaultDb = true)
         assertTrue { streamsConfig.topics.cypherTopics.containsKey(topic) }
         assertEquals(topicValue, streamsConfig.topics.cypherTopics[topic])
     }
@@ -111,7 +89,6 @@ class KafkaSinkConfigurationTest {
         val topicValue = "MERGE (n:Label{ id: event.id })"
         val topicKeyFoo = "streams.sink.topic.cypher.$topic.to.foo"
         val topicValueFoo = "MERGE (n:Foo{ id: event.id })"
-        val zookeeper = "zookeeper:2181"
         val bootstrap = "bootstrap:9092"
         val group = "mygroup"
         val autoOffsetReset = "latest"
@@ -119,7 +96,6 @@ class KafkaSinkConfigurationTest {
         val asyncCommit = "true"
         val config = mapOf(topicKey to topicValue,
                 topicKeyFoo to topicValueFoo,
-                "kafka.zookeeper.connect" to zookeeper,
                 "kafka.bootstrap.servers" to bootstrap,
                 "kafka.auto.offset.reset" to autoOffsetReset,
                 "kafka.enable.auto.commit" to autoCommit,
@@ -127,7 +103,7 @@ class KafkaSinkConfigurationTest {
                 "kafka.streams.async.commit" to asyncCommit,
                 "kafka.key.deserializer" to ByteArrayDeserializer::class.java.name,
                 "kafka.value.deserializer" to KafkaAvroDeserializer::class.java.name)
-        val expectedMap = mapOf("zookeeper.connect" to zookeeper, "bootstrap.servers" to bootstrap,
+        val expectedMap = mapOf("bootstrap.servers" to bootstrap,
                 "auto.offset.reset" to autoOffsetReset, "enable.auto.commit" to autoCommit, "group.id" to "$group-$dbName",
                 ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG to ByteArrayDeserializer::class.java.toString(),
                 ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG to ByteArrayDeserializer::class.java.toString(),
@@ -135,11 +111,9 @@ class KafkaSinkConfigurationTest {
                 "streams.async.commit" to asyncCommit,
                 "value.deserializer" to KafkaAvroDeserializer::class.java.name)
 
-        streamsConfig.config.putAll(config)
-        val kafkaSinkConfiguration = KafkaSinkConfiguration.create(streamsConfig, dbName)
+        val kafkaSinkConfiguration = KafkaSinkConfiguration.create(config, dbName, isDefaultDb = false)
         StreamsSinkConfigurationTest.testFromConf(kafkaSinkConfiguration.streamsSinkConfiguration, topic, topicValueFoo)
         assertEquals(emptyMap(), kafkaSinkConfiguration.extraProperties)
-        assertEquals(zookeeper, kafkaSinkConfiguration.zookeeperConnect)
         assertEquals(bootstrap, kafkaSinkConfiguration.bootstrapServers)
         assertEquals(autoOffsetReset, kafkaSinkConfiguration.autoOffsetReset)
         assertTrue { kafkaSinkConfiguration.streamsAsyncCommit }
@@ -150,7 +124,7 @@ class KafkaSinkConfigurationTest {
                 .toMap()
         assertEquals(expectedMap, resultMap)
 
-        val streamsConfig = StreamsSinkConfiguration.from(streamsConfig, dbName)
+        val streamsConfig = StreamsSinkConfiguration.from(config, dbName, isDefaultDb = false)
         assertEquals(1, streamsConfig.topics.cypherTopics.size)
         assertTrue { streamsConfig.topics.cypherTopics.containsKey(topic) }
         assertEquals(topicValueFoo, streamsConfig.topics.cypherTopics[topic])
@@ -159,7 +133,6 @@ class KafkaSinkConfigurationTest {
     @Test(expected = TopicValidationException::class)
     @Ignore("Disabled, use Kafka to deal with availability of the configured services")
     fun `should not validate the configuration because of unreachable kafka bootstrap server`() {
-        val zookeeper = "zookeeper:2181"
         val bootstrap = "bootstrap:9092"
         try {
             val topic = "topic-neo"
@@ -170,15 +143,13 @@ class KafkaSinkConfigurationTest {
             val autoCommit = "false"
             val config = mapOf(topicKey to topicValue,
                     "$topicKey.to.foo" to "$topicValue SET n += event.properties",
-                    "kafka.zookeeper.connect" to zookeeper,
                     "kafka.bootstrap.servers" to bootstrap,
                     "kafka.auto.offset.reset" to autoOffsetReset,
                     "kafka.enable.auto.commit" to autoCommit,
                     "kafka.group.id" to group,
                     "kafka.key.deserializer" to ByteArrayDeserializer::class.java.name,
                     "kafka.value.deserializer" to KafkaAvroDeserializer::class.java.name)
-            streamsConfig.config.putAll(config)
-            KafkaSinkConfiguration.from(streamsConfig, defaultDbName)
+            KafkaSinkConfiguration.from(config, defaultDbName, isDefaultDb = true)
         } catch (e: TopicValidationException) {
             assertEquals("The servers defined into the property `kafka.bootstrap.servers` are not reachable: [$bootstrap]", e.message)
             throw e
@@ -187,7 +158,6 @@ class KafkaSinkConfigurationTest {
 
     @Test(expected = RuntimeException::class)
     fun `should not validate the configuration because of empty kafka bootstrap server`() {
-        val zookeeper = "zookeeper:2181"
         val bootstrap = ""
         try {
             val topic = "topic-neo"
@@ -197,15 +167,13 @@ class KafkaSinkConfigurationTest {
             val autoOffsetReset = "latest"
             val autoCommit = "false"
             val config = mapOf(topicKey to topicValue,
-                    "kafka.zookeeper.connect" to zookeeper,
                     "kafka.bootstrap.servers" to bootstrap,
                     "kafka.auto.offset.reset" to autoOffsetReset,
                     "kafka.enable.auto.commit" to autoCommit,
                     "kafka.group.id" to group,
                     "kafka.key.deserializer" to ByteArrayDeserializer::class.java.name,
                     "kafka.value.deserializer" to KafkaAvroDeserializer::class.java.name)
-            streamsConfig.config.putAll(config)
-            KafkaSinkConfiguration.from(streamsConfig, defaultDbName)
+            KafkaSinkConfiguration.from(config, defaultDbName, isDefaultDb = true)
         } catch (e: RuntimeException) {
             assertEquals("The `kafka.bootstrap.servers` property is empty", e.message)
             throw e

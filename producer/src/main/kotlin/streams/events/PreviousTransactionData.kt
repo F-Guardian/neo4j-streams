@@ -112,12 +112,14 @@ class PreviousTransactionDataBuilder {
                                 .filterKeys { startLabels.contains(it) }
                                 .flatMap { it.value }
                     }
+
+                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.DEFAULT)
                     var startNodePropertyKeySet = it.startNode.propertyKeys.toSet()
                     if (startNodePropertyKeySet.contains("gid")) {
                         startNodePropertyKeySet = setOf("gid")
                     }
-                    val startNodeKeys = getNodeKeys(startLabels, startNodePropertyKeySet, startNodeConstraints)
-                            .toTypedArray()
+                    val startNodeKeys = getNodeKeys(startLabels, it.startNode.propertyKeys.toSet(), startNodeConstraints, relKeyStrategy)
+                        .toTypedArray()
 
 
                     val endLabels = it.endNode.labelNames()
@@ -130,8 +132,8 @@ class PreviousTransactionDataBuilder {
                     if (endNodePropertyKeySet.contains("gid")) {
                         endNodePropertyKeySet = setOf("gid")
                     }
-                    val endNodeKeys = getNodeKeys(endLabels, endNodePropertyKeySet, endNodeConstraints)
-                            .toTypedArray()
+                    val endNodeKeys = getNodeKeys(endLabels, it.endNode.propertyKeys.toSet(), endNodeConstraints, relKeyStrategy)
+                        .toTypedArray()
 
                     val payload = RelationshipPayloadBuilder()
                             .withId(it.id.toString())
@@ -237,6 +239,11 @@ class PreviousTransactionDataBuilder {
 
     fun withRelCreatedPayloads(createdPayload: Map<String, RelationshipPayload>): PreviousTransactionDataBuilder {
         this.relCreatedPayload = createdPayload
+        return this
+    }
+
+    fun withRelRoutingTypesAndStrategies(relRoutingTypesAndStrategies: Map<String, RelKeyStrategy>): PreviousTransactionDataBuilder {
+        this.relRoutingTypesAndStrategies = relRoutingTypesAndStrategies
         return this
     }
 

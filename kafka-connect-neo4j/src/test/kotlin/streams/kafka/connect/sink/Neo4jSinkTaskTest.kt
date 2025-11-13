@@ -7,6 +7,7 @@ import org.apache.kafka.connect.data.Timestamp
 import org.apache.kafka.connect.sink.SinkRecord
 import org.apache.kafka.connect.sink.SinkTask
 import org.apache.kafka.connect.sink.SinkTaskContext
+import org.junit.After
 import org.junit.Rule
 import org.junit.Test
 import org.mockito.Mockito.mock
@@ -17,6 +18,7 @@ import org.neo4j.harness.junit.rule.Neo4jRule
 import streams.events.*
 import streams.utils.JSONUtils
 import streams.service.errors.ErrorService
+import streams.service.errors.ProcessingError
 import streams.service.sink.strategy.CUDNode
 import streams.service.sink.strategy.CUDNodeRel
 import streams.service.sink.strategy.CUDOperations
@@ -28,6 +30,7 @@ import java.util.stream.StreamSupport
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.fail
 
 
 class Neo4jSinkTaskTest {
@@ -35,6 +38,11 @@ class Neo4jSinkTaskTest {
     @Rule @JvmField val db = Neo4jRule()
             .withDisabledServer()
             .withConfig(GraphDatabaseSettings.auth_enabled, false)
+
+    @After
+    fun after() {
+        cleanAll()
+    }
 
     private val PERSON_SCHEMA = SchemaBuilder.struct().name("com.example.Person")
             .field("firstName", Schema.STRING_SCHEMA)
@@ -75,7 +83,7 @@ class Neo4jSinkTaskTest {
         """.trimIndent()
         props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
         props[Neo4jSinkConnectorConfig.BATCH_SIZE] = 2.toString()
-        props[SinkTask.TOPICS_CONFIG] = "$firstTopic"
+        props[SinkTask.TOPICS_CONFIG] = firstTopic
 
         val task = Neo4jSinkTask()
         task.initialize(mock(SinkTaskContext::class.java))
@@ -372,6 +380,382 @@ class Neo4jSinkTaskTest {
     }
 
     @Test
+    fun `should insert data into Neo4j from CDC events with schema strategy, multiple constraints and labels`() {
+        val myTopic = UUID.randomUUID().toString()
+        val props = mapOf(Neo4jSinkConnectorConfig.SERVER_URI to db.boltURI().toString(),
+                Neo4jSinkConnectorConfig.TOPIC_CDC_SCHEMA to myTopic,
+                Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE to AuthenticationType.NONE.toString(),
+                SinkTask.TOPICS_CONFIG to myTopic)
+
+        val constraintsCharacter = listOf(
+                Constraint(label = "Character", type = StreamsConstraintType.UNIQUE, properties = setOf("surname")),
+                Constraint(label = "Character", type = StreamsConstraintType.UNIQUE, properties = setOf("name")),
+                Constraint(label = "Character", type = StreamsConstraintType.UNIQUE, properties = setOf("country", "address")),
+        )
+        val constraintsWriter = listOf(
+                Constraint(label = "Writer", type = StreamsConstraintType.UNIQUE, properties = setOf("lastName")),
+                Constraint(label = "Writer", type = StreamsConstraintType.UNIQUE, properties = setOf("firstName")),
+        )
+        val relSchema = Schema(properties = mapOf("since" to "Long"), constraints = constraintsCharacter.plus(constraintsWriter))
+        val nodeSchemaCharacter = Schema(properties = mapOf("name" to "String", "surname" to "String", "country" to "String", "address" to "String"), constraints = constraintsCharacter)
+        val nodeSchemaWriter = Schema(properties = mapOf("firstName" to "String", "lastName" to "String"), constraints = constraintsWriter)
+        val cdcDataStart = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 0,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "0",
+                        before = null,
+                        after = NodeChange(properties = mapOf("name" to "Naruto", "surname" to "Uzumaki", "country" to "Japan", "address" to "Land of Leaf"), labels = listOf("Character"))
+                ),
+                schema = nodeSchemaCharacter
+        )
+        val cdcDataEnd = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 1,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "1",
+                        before = null,
+                        after = NodeChange(properties = mapOf("firstName" to "Minato", "lastName" to "Namikaze"), labels = listOf("Writer"))
+                ),
+                schema = nodeSchemaWriter
+        )
+        val cdcDataRelationship = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 2,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = RelationshipPayload(
+                        id = "2",
+                        // leverage on first ids alphabetically, that is name, so we take the 2 previously created nodes
+                        start = RelationshipNodeChange(id = "99", labels = listOf("Character"), ids = mapOf("name" to "Naruto", "surname" to "Osvaldo", "address" to "Land of Sand")),
+                        end = RelationshipNodeChange(id = "88", labels = listOf("Writer"), ids = mapOf("firstName" to "Minato", "lastName" to "Franco", "address" to "Land of Fire")),
+                        after = RelationshipChange(properties = mapOf("since" to 2014)),
+                        before = null,
+                        label = "KNOWS WHO"
+                ),
+                schema = relSchema
+        )
+
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        val input = listOf(SinkRecord(myTopic, 1, null, null, null, cdcDataStart, 42),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataEnd, 43),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataRelationship, 44))
+
+        task.put(input)
+
+        db.defaultDatabaseService().beginTx().use {
+            val query = """
+                |MATCH p = (s:Character)-[r:`KNOWS WHO`{since: 2014}]->(e:Writer)
+                |RETURN count(p) AS count
+                |""".trimMargin()
+            it.execute(query)
+                    .columnAs<Long>("count").use {
+                        assertTrue { it.hasNext() }
+                        val path = it.next()
+                        assertEquals(1, path)
+                        assertFalse { it.hasNext() }
+                    }
+
+            val countAllNodes = db.defaultDatabaseService().beginTx().use { it.allNodes.stream().count() }
+            assertEquals(2L, countAllNodes)
+        }
+
+        // another CDC data, not matching the previously created nodes
+        val cdcDataRelationshipNotMatched = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 2,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = RelationshipPayload(
+                        id = "2",
+                        // leverage on first ids alphabetically, that is name, so create 2 additional nodes
+                        start = RelationshipNodeChange(id = "1", labels = listOf("Character"), ids = mapOf("name" to "Invalid", "surname" to "Uzumaki")),
+                        end = RelationshipNodeChange(id = "2", labels = listOf("Writer"), ids = mapOf("firstName" to "AnotherInvalid", "surname" to "Namikaze")),
+                        after = RelationshipChange(properties = mapOf("since" to 1998)),
+                        before = null,
+                        label = "HAS WRITTEN"
+                ),
+                schema = relSchema
+        )
+
+        val inputNotMatched = listOf(SinkRecord(myTopic, 1, null, null, null, cdcDataRelationshipNotMatched, 45))
+
+        task.put(inputNotMatched)
+
+        db.defaultDatabaseService().beginTx().use {
+            val query = """
+                |MATCH p = (s:Character)-[r:`HAS WRITTEN`{since: 1998}]->(e:Writer)
+                |RETURN count(p) AS count
+                |""".trimMargin()
+            it.execute(query)
+                    .columnAs<Long>("count").use {
+                        assertTrue { it.hasNext() }
+                        val path = it.next()
+                        assertEquals(1, path)
+                        assertFalse { it.hasNext() }
+                    }
+
+            val countAllNodes = db.defaultDatabaseService().beginTx().use { it.allNodes.stream().count() }
+            assertEquals(4L, countAllNodes)
+        }
+
+    }
+
+    @Test
+    fun `should insert data into Neo4j from CDC events with schema strategy and multiple unique constraints merging previous nodes`() {
+        val myTopic = UUID.randomUUID().toString()
+        val props = mapOf(Neo4jSinkConnectorConfig.SERVER_URI to db.boltURI().toString(),
+                Neo4jSinkConnectorConfig.TOPIC_CDC_SCHEMA to myTopic,
+                Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE to AuthenticationType.NONE.toString(),
+                SinkTask.TOPICS_CONFIG to myTopic)
+
+        val constraints = listOf(
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("name")),
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("country", "address")),
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("surname")),
+        )
+        val relSchema = Schema(properties = mapOf("since" to "Long"), constraints = constraints)
+        val nodeSchema = Schema(properties = mapOf("name" to "String", "surname" to "String", "country" to "String", "address" to "String"),
+                constraints = constraints)
+        val cdcDataStart = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 0,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "0",
+                        before = null,
+                        after = NodeChange(properties = mapOf("name" to "Naruto", "surname" to "Uzumaki", "country" to "Japan", "address" to "Land of Leaf"), labels = listOf("User"))
+                ),
+                schema = nodeSchema
+        )
+        val cdcDataEnd = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 1,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "1",
+                        before = null,
+                        after = NodeChange(properties = mapOf("name" to "Minato", "surname" to "Namikaze", "country" to "Japan", "address" to "Land of Leaf"), labels = listOf("User"))
+                ),
+                schema = nodeSchema
+        )
+        val cdcDataRelationship = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 2,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = RelationshipPayload(
+                        id = "2",
+                        // leverage on first ids alphabetically, that is name, so we take the 2 previously created nodes
+                        start = RelationshipNodeChange(id = "99", labels = listOf("User"), ids = mapOf("name" to "Naruto", "surname" to "Osvaldo", "address" to "Land of Sand")),
+                        end = RelationshipNodeChange(id = "88", labels = listOf("User"), ids = mapOf("name" to "Minato", "surname" to "Franco", "address" to "Land of Fire")),
+                        after = RelationshipChange(properties = mapOf("since" to 2014)),
+                        before = null,
+                        label = "KNOWS WHO"
+                ),
+                schema = relSchema
+        )
+
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        val input = listOf(SinkRecord(myTopic, 1, null, null, null, cdcDataStart, 42),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataEnd, 43),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataRelationship, 44))
+
+        task.put(input)
+
+        db.defaultDatabaseService().beginTx().use {
+            val query = """
+                |MATCH p = (s:User)-[r:`KNOWS WHO` {since: 2014}]->(e:User)
+                |RETURN count(p) as count
+                |""".trimMargin()
+            it.execute(query)
+                    .columnAs<Long>("count").use {
+                        assertTrue { it.hasNext() }
+                        val path = it.next()
+                        assertEquals(1, path)
+                        assertFalse { it.hasNext() }
+                    }
+
+            val labels = db.defaultDatabaseService().beginTx()
+                    .use { StreamSupport.stream(it.allLabels.spliterator(), false).map { it.name() }.collect(Collectors.toSet()) }
+            assertEquals(setOf("User"), labels)
+
+            val countUsers = db.defaultDatabaseService().beginTx().use { it.findNodes(Label.label("User")).stream().count() }
+            assertEquals(2L, countUsers)
+        }
+
+
+        // another CDC data, not matching the previously created nodes
+        val cdcDataRelationshipNotMatched = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 2,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = RelationshipPayload(
+                        id = "2",
+                        // leverage on first ids alphabetically, that is name, so create 2 additional nodes
+                        start = RelationshipNodeChange(id = "1", labels = listOf("User"), ids = mapOf("name" to "Invalid", "surname" to "Uzumaki")),
+                        end = RelationshipNodeChange(id = "2", labels = listOf("User"), ids = mapOf("name" to "AnotherInvalid", "surname" to "Namikaze")),
+                        after = RelationshipChange(properties = mapOf("since" to 2000)),
+                        before = null,
+                        label = "HAS WRITTEN"
+                ),
+                schema = relSchema
+        )
+
+        val inputNotMatched = listOf(SinkRecord(myTopic, 1, null, null, null, cdcDataRelationshipNotMatched, 45))
+
+        task.put(inputNotMatched)
+
+        db.defaultDatabaseService().beginTx().use {
+            val query = """
+                |MATCH p = (s:User)-[r:`HAS WRITTEN`{since: 2000}]->(e:User)
+                |RETURN count(p) AS count
+                |""".trimMargin()
+            it.execute(query)
+                    .columnAs<Long>("count").use {
+                        assertTrue { it.hasNext() }
+                        val path = it.next()
+                        assertEquals(1, path)
+                        assertFalse { it.hasNext() }
+                    }
+
+            val labels = db.defaultDatabaseService().beginTx()
+                    .use { StreamSupport.stream(it.allLabels.spliterator(), false).map { it.name() }.collect(Collectors.toSet()) }
+            assertEquals(setOf("User"), labels)
+
+            val countUsers = db.defaultDatabaseService().beginTx().use { it.allNodes.stream().count() }
+            assertEquals(4L, countUsers)
+        }
+    }
+
+    @Test
+    fun `should insert data into Neo4j from CDC events with schema strategy and multiple unique constraints`() {
+        val myTopic = UUID.randomUUID().toString()
+        val props = mapOf(Neo4jSinkConnectorConfig.SERVER_URI to db.boltURI().toString(),
+                Neo4jSinkConnectorConfig.TOPIC_CDC_SCHEMA to myTopic,
+                Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE to AuthenticationType.NONE.toString(),
+                SinkTask.TOPICS_CONFIG to myTopic)
+
+        val constraints = listOf(
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("name")),
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("surname")),
+                Constraint(label = "User", type = StreamsConstraintType.UNIQUE, properties = setOf("country", "address")),
+        )
+        val relSchema = Schema(properties = mapOf("since" to "Long"), constraints = constraints)
+        val nodeSchema = Schema(properties = mapOf("name" to "String", "surname" to "String", "country" to "String", "address" to "String"),
+                constraints = constraints)
+        val cdcDataStart = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 0,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "0",
+                        before = null,
+                        after = NodeChange(properties = mapOf("name" to "Naruto", "surname" to "Uzumaki", "country" to "Japan", "address" to "Land of Leaf"), labels = listOf("User"))
+                ),
+                schema = nodeSchema
+        )
+        val cdcDataEnd = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 1,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = NodePayload(id = "1",
+                        before = null,
+                        after = NodeChange(properties = mapOf("name" to "Minato", "surname" to "Namikaze", "country" to "Japan", "address" to "Land of Leaf"), labels = listOf("User"))
+                ),
+                schema = nodeSchema
+        )
+        val cdcDataRelationship = StreamsTransactionEvent(
+                meta = Meta(timestamp = System.currentTimeMillis(),
+                        username = "user",
+                        txId = 1,
+                        txEventId = 2,
+                        txEventsCount = 3,
+                        operation = OperationType.created
+                ),
+                payload = RelationshipPayload(
+                        id = "2",
+                        // leverage on first ids alphabetically, that is name, so create 2 additional nodes
+                        start = RelationshipNodeChange(id = "1", labels = listOf("User"), ids = mapOf("name" to "Invalid", "surname" to "Uzumaki")),
+                        end = RelationshipNodeChange(id = "2", labels = listOf("User"), ids = mapOf("name" to "AnotherInvalid", "surname" to "Namikaze")),
+                        after = RelationshipChange(properties = mapOf("since" to 2014)),
+                        before = null,
+                        label = "KNOWS WHO"
+                ),
+                schema = relSchema
+        )
+
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        val input = listOf(
+                SinkRecord(myTopic, 1, null, null, null, cdcDataStart, 42),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataEnd, 43),
+                SinkRecord(myTopic, 1, null, null, null, cdcDataRelationship, 44),
+        )
+        task.put(input)
+
+        db.defaultDatabaseService().beginTx().use {
+            val query = """
+                |MATCH p = (s:User)-[r:`KNOWS WHO` {since: 2014}]->(e:User)
+                |RETURN count(p) as count
+                |""".trimMargin()
+            it.execute(query)
+                    .columnAs<Long>("count").use {
+                        assertTrue { it.hasNext() }
+                        val path = it.next()
+                        assertEquals(1, path)
+                        assertFalse { it.hasNext() }
+                    }
+
+            val labels = db.defaultDatabaseService().beginTx()
+                    .use { StreamSupport.stream(it.allLabels.spliterator(), false).map { it.name() }.collect(Collectors.toSet()) }
+            assertEquals(setOf("User"), labels)
+
+            val countUsers = db.defaultDatabaseService().beginTx().use { it.findNodes(Label.label("User")).stream().count() }
+            assertEquals(4L, countUsers)
+        }
+    }
+
+    @Test
     fun `should delete data into Neo4j from CDC events`() {
         db.defaultDatabaseService().beginTx().use {
             it.execute("""
@@ -604,6 +988,56 @@ class Neo4jSinkTaskTest {
     }
 
     @Test
+    fun `should create and delete relationship from CUD event without properties field`() {
+        val relType = "MY_REL"
+        val key = "key"
+        val startNode = "SourceNode"
+        val endNode = "TargetNode"
+        val topic = UUID.randomUUID().toString()
+
+        db.defaultDatabaseService().beginTx().use {
+            it.execute("CREATE (:$startNode {key: 1}) CREATE (:$endNode {key: 1})").close()
+            it.commit()
+        }
+        
+        val start = CUDNodeRel(ids = mapOf(key to 1), labels = listOf(startNode))
+        val end = CUDNodeRel(ids = mapOf(key to 1), labels = listOf(endNode))
+        val relMerge = CUDRelationship(op = CUDOperations.merge, from = start, to = end, rel_type = relType)
+        val sinkRecordMerge = SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(relMerge), 0L)
+
+        val props = mutableMapOf<String, String>()
+        props[Neo4jSinkConnectorConfig.SERVER_URI] = db.boltURI().toString()
+        props[Neo4jSinkConnectorConfig.TOPIC_CUD] = topic
+        props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
+        props[SinkTask.TOPICS_CONFIG] = topic
+
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        task.put(listOf(sinkRecordMerge))
+
+        val queryCount = "MATCH p = (:$startNode)-[:$relType]->(:$endNode) RETURN count(p) AS count"
+        
+        db.defaultDatabaseService().beginTx().use {
+            val countRels = it.execute(queryCount)
+                .columnAs<Long>("count")
+                .next()
+            assertEquals(1L, countRels)
+        }
+
+        val relDelete = CUDRelationship(op = CUDOperations.delete, from = start, to = end, rel_type = relType)
+        val sinkRecordDelete = SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(relDelete), 1L)
+        task.put(listOf(sinkRecordDelete))
+
+        db.defaultDatabaseService().beginTx().use {
+            val countRels = it.execute(queryCount)
+                .columnAs<Long>("count")
+                .next()
+            assertEquals(0L, countRels)
+        }
+    }
+
+    @Test
     fun `should ingest node data from CUD Events`() {
         // given
         val mergeMarkers = listOf(2, 5, 7)
@@ -690,6 +1124,279 @@ class Neo4jSinkTaskTest {
             """.trimIndent())
                     .columnAs<Long>("count").next()
             assertEquals(10L, countFooBarLabel)
+        }
+    }
+
+    @Test
+    fun `should create nodes and relationship, if one or both nodes doesn't exist from CUD Events`() {
+        // given
+        val key = "key"
+        val topic = UUID.randomUUID().toString()
+        val relType = "MY_REL"
+        val data = (1..10).map {
+            val properties = mapOf("foo" to "foo-value-$it", "id" to it)
+            val start = CUDNodeRel(ids = mapOf(key to it), labels = listOf("Foo", "Bar"), op = CUDOperations.merge)
+            val end = CUDNodeRel(ids = mapOf(key to it), labels = listOf("FooBar"), op = CUDOperations.merge)
+            val rel = CUDRelationship(op = CUDOperations.merge, properties = properties, from = start, to = end, rel_type = relType)
+            SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(rel), it.toLong())
+        }
+        val props = mutableMapOf<String, String>()
+        props[Neo4jSinkConnectorConfig.SERVER_URI] = db.boltURI().toString()
+        props[Neo4jSinkConnectorConfig.TOPIC_CUD] = topic
+        props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
+        props[SinkTask.TOPICS_CONFIG] = topic
+
+        // when
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        task.put(data)
+
+        // then
+        db.defaultDatabaseService().beginTx().use {
+            val countFooBarLabel = it.execute("""
+                MATCH (:Foo:Bar)-[r:$relType]->(:FooBar)
+                RETURN count(r) AS count
+            """.trimIndent())
+                    .columnAs<Long>("count").next()
+            assertEquals(10L, countFooBarLabel)
+        }
+
+        // now, I create only start nodes
+        val dataWithStartPreset = (11..20).map {
+            val properties = mapOf("foo" to "foo-value-$it", "id" to it)
+            val start = CUDNodeRel(ids = mapOf(key to it), labels = listOf("Foo", "Bar"))
+            val end = CUDNodeRel(ids = mapOf(key to it), labels = listOf("FooBar"), op = CUDOperations.merge)
+            val rel = CUDRelationship(op = CUDOperations.merge, properties = properties, from = start, to = end, rel_type = relType)
+            SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(rel), it.toLong())
+        }
+
+        db.defaultDatabaseService().beginTx().use {
+            it.execute("""
+                UNWIND range(11, 20) AS id
+                CREATE (:Foo:Bar {key: id})
+            """.trimIndent()).close()
+            assertEquals(10, it.allRelationships.count())
+            assertEquals(30, it.allNodes.count())
+            it.commit()
+        }
+
+        task.put(dataWithStartPreset)
+
+        db.defaultDatabaseService().beginTx().use {
+            val countFooBarLabel = it.execute("""
+                MATCH (:Foo:Bar)-[r:$relType]->(:FooBar)
+                RETURN count(r) AS count
+            """.trimIndent())
+                    .columnAs<Long>("count").next()
+            assertEquals(20L, countFooBarLabel)
+        }
+
+        // now, I create only end nodes
+        val dataWithEndPreset = (21..30).map {
+            val properties = mapOf("foo" to "foo-value-$it", "id" to it)
+            val start = CUDNodeRel(ids = mapOf(key to it), labels = listOf("Foo", "Bar"), op = CUDOperations.merge)
+            val end = CUDNodeRel(ids = mapOf(key to it), labels = listOf("FooBar"))
+            val rel = CUDRelationship(op = CUDOperations.merge, properties = properties, from = start, to = end, rel_type = relType)
+            SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(rel), it.toLong())
+        }
+
+        db.defaultDatabaseService().beginTx().use {
+            it.execute("""
+                UNWIND range(21, 30) AS id
+                CREATE (:FooBar {key: id})
+            """.trimIndent()).close()
+            assertEquals(20, it.allRelationships.count())
+            assertEquals(50, it.allNodes.count())
+            it.commit()
+        }
+
+        task.put(dataWithEndPreset)
+
+        db.defaultDatabaseService().beginTx().use {
+            val countFooBarLabel = it.execute("""
+                MATCH (:Foo:Bar)-[r:$relType]->(:FooBar)
+                RETURN count(r) AS count
+            """.trimIndent())
+                    .columnAs<Long>("count").next()
+            assertEquals(30L, countFooBarLabel)
+        }
+
+    }
+
+    @Test
+    fun `should create entities only with valid CUD operations`() {
+        // given
+        val invalidMarkers = listOf(3, 6, 9)
+        val key = "key"
+        val topic = UUID.randomUUID().toString()
+        val data = (1..10).map {
+            val labels = listOf("Foo", "Bar", "Label")
+            val properties = mapOf("foo" to "foo-value-$it", "id" to it)
+            val (op, ids) = when (it) {
+                in invalidMarkers -> CUDOperations.match to mapOf(key to it)
+                else -> CUDOperations.create to emptyMap()
+            }
+            val cudNode = CUDNode(op = op,
+                    labels = labels,
+                    ids = ids,
+                    properties = properties)
+            SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(cudNode), it.toLong())
+        }
+
+        val relType = "MY_REL"
+        val invalidRelMarkers = listOf(1, 4)
+        val invalidNodeRelMarkers = listOf(3, 6, 7)
+        val dataRel = (1..10).map {
+            val properties = mapOf("foo" to "foo-value-$it", "id" to it)
+            val opRelationship = if (it in invalidRelMarkers) CUDOperations.delete else CUDOperations.merge
+            val opStartNode = if (it in invalidNodeRelMarkers) CUDOperations.delete else CUDOperations.merge
+            val start = CUDNodeRel(ids = mapOf(key to it), labels = listOf("Foo", "Bar"), op = opStartNode)
+            val end = CUDNodeRel(ids = mapOf(key to it), labels = listOf("FooBar"), op = CUDOperations.merge)
+            val rel = CUDRelationship(op = opRelationship, properties = properties, from = start, to = end, rel_type = relType)
+            SinkRecord(topic, 1, null, null, null, JSONUtils.asMap(rel), it.toLong())
+        }
+
+        val props = mutableMapOf<String, String>()
+        props[Neo4jSinkConnectorConfig.SERVER_URI] = db.boltURI().toString()
+        props[Neo4jSinkConnectorConfig.TOPIC_CUD] = topic
+        props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
+        props[SinkTask.TOPICS_CONFIG] = topic
+
+        // when
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        task.put(data)
+        task.put(dataRel)
+
+        // then
+        db.defaultDatabaseService().beginTx().use {
+            val countFooBarLabel = it.execute("MATCH (n:Foo:Bar:Label) RETURN count(n) AS count")
+                    .columnAs<Long>("count")
+                    .next()
+            assertEquals(7L, countFooBarLabel)
+            val countRelationships = it.execute("""
+                MATCH (:Foo:Bar)-[r:$relType]->(:FooBar)
+                RETURN count(r) AS count
+            """.trimIndent())
+                    .columnAs<Long>("count").next()
+            assertEquals(5L, countRelationships)
+        }
+    }
+
+    @Test
+    fun `should fail data insertion with ProcessingError`() {
+        // given
+        val topic = UUID.randomUUID().toString()
+
+        val props = mutableMapOf<String, String>()
+        props[Neo4jSinkConnectorConfig.SERVER_URI] = db.boltURI().toString()
+        props["${Neo4jSinkConnectorConfig.TOPIC_PATTERN_RELATIONSHIP_PREFIX}$topic"] = "(:User{!sourceId,sourceName,sourceSurname})-[:KNOWS]->(:User{!targetId,targetName,targetSurname})"
+        props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
+        props[SinkTask.TOPICS_CONFIG] = topic
+        props[Neo4jSinkConnectorConfig.DATABASE] = "notExistent"
+
+        val data = mapOf("sourceId" to 1, "sourceName" to "Andrea", "sourceSurname" to "Santurbano",
+                "targetId" to 1, "targetName" to "Michael", "targetSurname" to "Hunger", "since" to 2014)
+
+        val task = Neo4jSinkTask()
+        task.initialize(mock(SinkTaskContext::class.java))
+        task.start(props)
+        val input = listOf(SinkRecord(topic, 1, null, null, null, data, 42))
+
+        try {
+            task.put(input)
+            fail("It should fail with ProcessingError")
+        } catch (e: ProcessingError) {
+            val errorData = e.errorDatas.first()
+            assertTrue(errorData.databaseName == "notExistent"
+                    && errorData.exception!!.javaClass.name == "org.neo4j.driver.exceptions.FatalDiscoveryException")
+        }
+
+        props[Neo4jSinkConnectorConfig.DATABASE] = "neo4j"
+        val taskNotValid = Neo4jSinkTask()
+        taskNotValid.initialize(mock(SinkTaskContext::class.java))
+        taskNotValid.start(props)
+
+        val dataNotValid = mapOf("sourceId" to null, "sourceName" to "Andrea", "sourceSurname" to "Santurbano",
+                "targetId" to 1, "targetName" to "Michael", "targetSurname" to "Hunger", "since" to 2014)
+        val inputNotValid = listOf(SinkRecord(topic, 1, null, null, null, dataNotValid, 43))
+
+        try {
+            taskNotValid.put(inputNotValid)
+            fail("It should fail with ProcessingError")
+        } catch (e: ProcessingError) {
+            val errorData = e.errorDatas.first()
+            assertTrue(errorData.databaseName == "neo4j"
+                    && errorData.exception!!.javaClass.name == "org.neo4j.driver.exceptions.ClientException")
+        }
+    }
+    
+    @Test
+    fun `should stop the query and fails with small timeout and vice versa`() {
+        val myTopic = "foo"
+        val props = mutableMapOf<String, String>()
+        props[Neo4jSinkConnectorConfig.SERVER_URI] = db.boltURI().toString()
+        props["${Neo4jSinkConnectorConfig.TOPIC_CYPHER_PREFIX}$myTopic"] = "CREATE (n:Person {name: event.name})"
+        props[Neo4jSinkConnectorConfig.AUTHENTICATION_TYPE] = AuthenticationType.NONE.toString()
+        props[Neo4jSinkConnectorConfig.BATCH_PARALLELIZE] = true.toString()
+        val batchSize = 500000
+        props[Neo4jSinkConnectorConfig.BATCH_SIZE] = batchSize.toString()
+        props[Neo4jSinkConnectorConfig.BATCH_TIMEOUT_MSECS] = 1.toString()
+        props[SinkTask.TOPICS_CONFIG] = myTopic
+        val input = (1..batchSize).map {
+            SinkRecord(myTopic, 1, null, null, null, mapOf("name" to it.toString()), it.toLong())
+        }
+        // test timeout with parallel=true
+        assertFailsWithTimeout(props, input, batchSize)
+        countFooPersonEntities(0)
+
+        // test timeout with parallel=false
+        props[Neo4jSinkConnectorConfig.BATCH_PARALLELIZE] = false.toString()
+        assertFailsWithTimeout(props, input, batchSize)
+        countFooPersonEntities(0)
+
+        // test with large timeout
+        props[Neo4jSinkConnectorConfig.BATCH_TIMEOUT_MSECS] = 30000.toString()
+        val taskValidParallelFalse = Neo4jSinkTask()
+        taskValidParallelFalse.initialize(mock(SinkTaskContext::class.java))
+        taskValidParallelFalse.start(props)
+        taskValidParallelFalse.put(input)         
+        countFooPersonEntities(batchSize)
+
+        props[Neo4jSinkConnectorConfig.BATCH_PARALLELIZE] = true.toString()
+        val taskValidParallelTrue = Neo4jSinkTask()
+        taskValidParallelTrue.initialize(mock(SinkTaskContext::class.java))
+        taskValidParallelTrue.start(props)
+        taskValidParallelTrue.put(input)         
+        countFooPersonEntities(batchSize * 2)
+    }
+
+    private fun assertFailsWithTimeout(props: MutableMap<String, String>, input: List<SinkRecord>, expectedDataErrorSize: Int) {
+        try {
+            val taskInvalid = Neo4jSinkTask()
+            taskInvalid.initialize(mock(SinkTaskContext::class.java))
+            taskInvalid.start(props)
+            taskInvalid.put(input)
+            fail("Should fail because of TimeoutException")
+        } catch (e: ProcessingError) {
+            val errors = e.errorDatas
+            assertEquals(expectedDataErrorSize, errors.size)
+        }
+    }
+
+    private fun countFooPersonEntities(expected: Int) {
+        db.defaultDatabaseService().beginTx().use {
+            val personCount = it.execute("MATCH (p:Person) RETURN count(p) as count").columnAs<Long>("count").next()
+            assertEquals(expected, personCount.toInt())
+        }
+    }
+    
+    private fun cleanAll() {
+        db.defaultDatabaseService().beginTx().use {
+            it.execute("MATCH (n) DETACH DELETE n")
+            it.commit()
         }
     }
 

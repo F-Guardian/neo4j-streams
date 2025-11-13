@@ -8,6 +8,7 @@ import org.junit.runners.Suite
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.testcontainers.containers.KafkaContainer
+import org.testcontainers.containers.Network
 import streams.procedures.StreamsProcedures
 import streams.utils.StreamsUtils
 
@@ -16,7 +17,8 @@ import streams.utils.StreamsUtils
         KafkaEventRouterProcedureTSE::class,
         KafkaEventRouterSimpleTSE::class,
         KafkaEventRouterWithConstraintsTSE::class,
-        KafkaEventRouterEnterpriseTSE::class
+        KafkaEventRouterEnterpriseTSE::class,
+        KafkaEventRouterCompactionStrategyTSE::class
 )
 class KafkaEventRouterSuiteIT {
 
@@ -44,6 +46,7 @@ class KafkaEventRouterSuiteIT {
             var exists = false
             StreamsUtils.ignoreExceptions({
                 kafka = KafkaContainer(confluentPlatformVersion)
+                    .withNetwork(Network.newNetwork())
                 kafka.start()
                 exists = true
             }, IllegalStateException::class.java)
