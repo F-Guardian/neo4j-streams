@@ -63,7 +63,7 @@ public class ImpermanentDbmsRule extends DbmsRule
     }
 
     @Override
-    public InternalTransaction beginTransaction(KernelTransaction.Type type, LoginContext loginContext, ClientConnectionInfo clientConnectionInfo, RoutingInfo routingInfo, List<String> list, long l, TimeUnit timeUnit, Consumer<Status> consumer, TransactionExceptionMapper transactionExceptionMapper) {
+    public InternalTransaction beginTransaction(KernelTransaction.Type type, LoginContext loginContext, ClientConnectionInfo clientConnectionInfo, RoutingInfo routingInfo, long l, TimeUnit timeUnit, Consumer<Status> consumer, TransactionExceptionMapper transactionExceptionMapper) {
         return null;
     }
 

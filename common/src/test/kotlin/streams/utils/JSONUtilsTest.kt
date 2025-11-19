@@ -2,10 +2,10 @@ package streams.utils
 
 import org.junit.Test
 import org.neo4j.driver.Values
-import org.neo4j.values.storable.CoordinateReferenceSystem.Cartesian
-import org.neo4j.values.storable.CoordinateReferenceSystem.Cartesian_3D
-import org.neo4j.values.storable.CoordinateReferenceSystem.WGS84
-import org.neo4j.values.storable.CoordinateReferenceSystem.WGS84_3D
+import org.neo4j.values.storable.CoordinateReferenceSystem.CARTESIAN
+import org.neo4j.values.storable.CoordinateReferenceSystem.CARTESIAN_3D
+import org.neo4j.values.storable.CoordinateReferenceSystem.WGS_84
+import org.neo4j.values.storable.CoordinateReferenceSystem.WGS_84_3D
 import org.neo4j.values.storable.DateTimeValue.datetime
 import org.neo4j.values.storable.DateValue.date
 import org.neo4j.values.storable.TimeValue.time
@@ -31,10 +31,10 @@ class JSONUtilsTest {
                 "\"point2dWgs84\":{\"crs\":\"wgs-84\",\"longitude\":1.0,\"latitude\":2.0}," +
                 "\"point3dWgs84\":{\"crs\":\"wgs-84-3d\",\"longitude\":1.0,\"latitude\":2.0,\"height\":3.0}," +
                 "\"time\":\"14:00:00Z\",\"dateTime\":\"2017-12-17T17:14:35.123456789Z\"}"
-        val map = linkedMapOf<String, Any>("point2dCartesian" to pointValue(Cartesian, 1.0, 2.0),
-                "point3dCartesian" to pointValue(Cartesian_3D, 1.0, 2.0, 3.0),
-                "point2dWgs84" to pointValue(WGS84, 1.0, 2.0),
-                "point3dWgs84" to pointValue(WGS84_3D, 1.0, 2.0, 3.0),
+        val map = linkedMapOf<String, Any>("point2dCartesian" to pointValue(CARTESIAN, 1.0, 2.0),
+                "point3dCartesian" to pointValue(CARTESIAN_3D, 1.0, 2.0, 3.0),
+                "point2dWgs84" to pointValue(WGS_84, 1.0, 2.0),
+                "point3dWgs84" to pointValue(WGS_84_3D, 1.0, 2.0, 3.0),
                 "time" to time(14, 0, 0, 0, UTC),
                 "dateTime" to datetime(date(2017, 12, 17), time(17, 14, 35, 123456789, UTC)))
 
@@ -53,10 +53,10 @@ class JSONUtilsTest {
                 "\"point2dWgs84\":{\"crs\":\"wgs-84\",\"longitude\":1.0,\"latitude\":2.0}," +
                 "\"point3dWgs84\":{\"crs\":\"wgs-84-3d\",\"longitude\":1.0,\"latitude\":2.0,\"height\":3.0}," +
                 "\"time\":\"14:00:00Z\",\"dateTime\":\"2017-12-17T17:14:35.123456789Z\"}"
-        val map = linkedMapOf<String, Any>("point2dCartesian" to pointValue(Cartesian, 1.0, 2.0),
-                "point3dCartesian" to Values.point(Cartesian_3D.code, 1.0, 2.0, 3.0),
-                "point2dWgs84" to Values.point(WGS84.code, 1.0, 2.0),
-                "point3dWgs84" to Values.point(WGS84_3D.code, 1.0, 2.0, 3.0),
+        val map = linkedMapOf<String, Any>("point2dCartesian" to pointValue(CARTESIAN, 1.0, 2.0),
+                "point3dCartesian" to Values.point(CARTESIAN_3D.code, 1.0, 2.0, 3.0),
+                "point2dWgs84" to Values.point(WGS_84.code, 1.0, 2.0),
+                "point3dWgs84" to Values.point(WGS_84_3D.code, 1.0, 2.0, 3.0),
                 "time" to time(14, 0, 0, 0, UTC),
                 "dateTime" to datetime(date(2017, 12, 17), time(17, 14, 35, 123456789, UTC)))
 

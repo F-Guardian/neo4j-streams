@@ -51,7 +51,7 @@ class KafkaEventRouterSuiteIT {
 
         fun registerPublishProcedure(db: GraphDatabaseAPI) {
             db.dependencyResolver.resolveDependency(GlobalProcedures::class.java)
-                    .registerProcedure(StreamsProcedures::class.java, true)
+                    .registerProcedure(StreamsProcedures::class.java)
         }
     }
 
