@@ -211,7 +211,7 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                             .withProperties(it.allProperties)
                             .build()
 
-                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.DEFAULT)
+                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.ALL)
 
                     val startLabels = it.startNode.labelNames()
                     val startNodeConstraints = filterNodeConstraintCache(startLabels)
@@ -260,7 +260,7 @@ class StreamsTransactionEventHandler(private val router: StreamsEventRouter,
                     } else {
                         it.endNode.propertyKeys
                     }
-                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.DEFAULT)
+                    val relKeyStrategy = relRoutingTypesAndStrategies.getOrDefault(it.type.name(), RelKeyStrategy.ALL)
 
                     val startNodeConstraints = filterNodeConstraintCache(startNodeLabels)
                     val startKeys = getNodeKeys(startNodeLabels, startPropertyKeys.toSet(), startNodeConstraints, relKeyStrategy)

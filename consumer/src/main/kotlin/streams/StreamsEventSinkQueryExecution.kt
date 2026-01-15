@@ -14,6 +14,7 @@ class StreamsEventSinkQueryExecution(private val db: GraphDatabaseAPI,
                                      streamsStrategyStorage: StreamsStrategyStorage):
         StreamsSinkService(streamsStrategyStorage) {
 
+    // TODO 降低kafka数据or消费重复影响
     override fun write(query: String, params: Collection<Any>) {
         if (params.isEmpty()) return
         if (ConsumerUtils.isWriteableInstance(db)) {

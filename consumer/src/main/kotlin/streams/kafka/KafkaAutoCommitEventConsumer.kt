@@ -91,6 +91,7 @@ open class KafkaAutoCommitEventConsumer(private val config: KafkaSinkConfigurati
     }
 
     fun executeAction(action: (String, List<StreamsSinkEntity>) -> Unit, topic: String, topicRecords: Iterable<ConsumerRecord<out Any, out Any>>) {
+        // TODO 无限重试阻塞
         try {
             action(topic, topicRecords.map { it.toStreamsSinkEntity() })
         } catch (e: Exception) {
